@@ -1,7 +1,65 @@
+Shinken logs MongoDB storage 
+============================
 
-mod-mongo-log
-====================
-
-Shinken module for exporting Shinken logs to mongodb from the Broker daemon
+Shinken module for storing Shinken logs to mongodb from the Broker daemon
 
 No need for Livestatus !
+
+
+
+Requirements 
+=============
+```
+   apt-get install pymongo
+```
+
+
+Enabling Mongo logs 
+=============================
+
+To use the mongo-logs module you must declare it in your broker configuration.
+```
+   define broker {
+      ... 
+
+      modules    	 ..., mongo-logs
+
+   }
+```
+
+
+The module configuration is defined in the file: mongo-logs.cfg.
+
+Default configuration needs to be tuned up to your MongoDB configuration. 
+
+```
+## Module:      mongo-logs
+## Loaded by:   Broker
+# Store the Shinken logs in a mongodb database, so anyone can query them ...
+define module {
+   module_name     mongo-logs
+   module_type     mongo-logs
+   mongodb_uri     mongodb://localhost/?safe=false  ; Set to your value
+   
+   # If you are running a MongoDB cluster (called a “replica set” in MongoDB),
+   # you need to specify it's name here. 
+   # With this option set, you can also write the mongodb_uri as a comma-separated
+   # list of host:port items. (But one is enough, it will be used as a “seed”)
+   #replica_set
+
+   # Database name where to store the logs collection
+   database        shinken
+   
+   # Logs collection name
+   collection      logs
+   
+   # Logs rotation
+   # Remove logs older than the specified value
+   # Value is specified as : 
+   # 1d: 1 day
+   # 3m: 3 months ...
+   max_logs_age    3m  ; d = days, w = weeks, m = months, y = years
+}
+```
+
+It's done :)
