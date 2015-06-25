@@ -198,11 +198,14 @@ class MongoLogs(BaseModule):
         """For a MongoDB there is no rotate, but we will delete old contents."""
         now = time.time()
         if self.next_log_db_rotate <= now:
+            logger.info("[mongo-logs] rotating logs ...")
+            
             today = datetime.date.today()
             today0000 = datetime.datetime(today.year, today.month, today.day, 0, 0, 0)
             today0005 = datetime.datetime(today.year, today.month, today.day, 0, 5, 0)
             oldest = today0000 - datetime.timedelta(days=self.max_logs_age)
             self.db[self.collection].remove({u'time': {'$lt': time.mktime(oldest.timetuple())}})
+            logger.info("[mongo-logs] removed logs older than %s days.", self.max_logs_age)
 
             if now < time.mktime(today0005.timetuple()):
                 nextrotation = today0005
@@ -219,14 +222,13 @@ class MongoLogs(BaseModule):
         line = data['log']
         if re.match("^\[[0-9]*\] [A-Z][a-z]*.:", line):
             # Match log which NOT have to be stored
-            # print "Unexpected in manage_log_brok", line
-            logger.info('[mongo-logs] do not store: %s', line)
+            logger.warning('[mongo-logs] do not store: %s', line)
             return
             
         logline = Logline(line=line)
         values = logline.as_dict()
         if logline.logclass != LOGCLASS_INVALID:
-            logger.info('[mongo-logs] store values: %s', values)
+            logger.debug('[mongo-logs] store values: %s', values)
             try:
                 self.db[self.collection].insert(values)
                 self.is_connected = CONNECTED
@@ -259,7 +261,6 @@ class MongoLogs(BaseModule):
                 self.is_connected = DISCONNECTED
                 logger.error("[mongo-logs] Database error occurred: %s", exp)
                 raise MongoLogsError
-            # FIXME need access to this #self.livestatus.count_event('log_message')
         else:
             logger.info("[mongo-logs] This line is invalid: %s", line)
 
