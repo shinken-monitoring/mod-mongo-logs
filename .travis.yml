@@ -1,0 +1,24 @@
+language: python
+python:
+  - "2.7"
+  - "2.6"
+
+install:
+  - ./test/setup_module_test.sh
+  - pip install importlib # this is a requirement of shinken
+  - export PYTHONPATH=$PYTHONPATH:~/shinken # we need shinken..
+  - export PYTHONPATH=$PYTHONPATH:~/shinken/test
+  - export PYTHONPATH=$PYTHONPATH:~/mod-livestatus/test # we also need mock_livestatus from mod-livestatus..
+
+script:
+  - mongodir=$(pwd)
+  # tests need to run from shinken test directory for access to test config files
+  #  (as long as the test config files are referenced with a relative path)
+  - cd ~/shinken/test
+  - nosetests -vx --with-coverage --cover-package=modules $mongodir/test
+
+after_success:
+  coveralls
+
+notifications:
+  email: false

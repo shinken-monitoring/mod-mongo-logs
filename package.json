@@ -1,0 +1,27 @@
+{
+  "name": "mongo-logs",
+  "types": ["module"],
+  "version": "1.0.0",
+  "homepage": "http://github.com/shinken-monitoring/mod-mongo-logs",
+  "author": "Frédéric Mohier",
+  "description": "Store Shinken logs in MongoDB without Livestatus",
+  "contributors": [
+    {
+      "name": "Frédéric Mohier",
+      "email": "frederic.mohier@gmail.com"
+    }
+  ],
+  "repository": "https://github.com/shinken-monitoring/mod-mongo-logs",
+  "keywords": [
+    "module",
+    "broker",
+    "logs",
+    "log",
+    "logstore",
+    "mongodb"
+  ],
+  "dependencies": {
+    "shinken": ">=2.0"
+  },
+  "license": "AGPL"
+}
