@@ -268,7 +268,17 @@ class MongoLogs(BaseModule):
     def main(self):
         self.set_proctitle(self.name)
         self.set_exit_handler()
+        
+        db_commit_next_time = time.time()
+
         while not self.interrupted:
+            now = time.time()
+
+            if db_commit_next_time < now:
+                # Commit every 5 seconds ...
+                db_commit_next_time = now + 5
+                self.commit_and_rotate_log_db()
+
             l = self.to_q.get()
             for b in l:
                 b.prepare()
