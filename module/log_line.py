@@ -184,6 +184,17 @@ class Logline(dict):
                 elif type == 'EXTERNAL COMMAND':
                     logobject = LOGOBJECT_INFO
                     logclass = LOGCLASS_COMMAND
+
+                elif type == 'TIMEPERIOD TRANSITION':
+                    logobject = LOGOBJECT_INFO
+                    logclass = LOGCLASS_PROGRAM
+                    
+                elif type == 'INFO' or \
+                     type == 'WARNING' or \
+                     type == 'ERROR':
+                    logobject = LOGOBJECT_INFO
+                    logclass = LOGCLASS_PROGRAM
+                    
                 elif type.startswith('starting...') or \
                      type.startswith('shutting down...') or \
                      type.startswith('Bailing out') or \
