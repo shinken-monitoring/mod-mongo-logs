@@ -170,14 +170,15 @@ class Logline(dict):
                     logobject = LOGOBJECT_HOST
                     logclass = LOGCLASS_PASSIVECHECK
                     host_name, state, check_plugin_output = options.split(';', 2)
+                    
                 elif type == 'SERVICE EVENT HANDLER':
-                    # SERVICE EVENT HANDLER: test_host_0;test_ok_0;CRITICAL;SOFT;1;eventhandler
                     logobject = LOGOBJECT_SERVICE
+                    logclass = LOGCLASS_NOTIFICATION
                     host_name, service_description, state, state_type, attempt, command_name = options.split(';', 5)
                     state = service_states[state]
-
                 elif type == 'HOST EVENT HANDLER':
                     logobject = LOGOBJECT_HOST
+                    logclass = LOGCLASS_NOTIFICATION
                     host_name, state, state_type, attempt, command_name = options.split(';', 4)
                     state = host_states[state]
 
