@@ -1,7 +1,7 @@
 {
   "name": "mongo-logs",
   "types": ["module"],
-  "version": "1.0.1",
+  "version": "1.0.2",
   "homepage": "http://github.com/shinken-monitoring/mod-mongo-logs",
   "author": "Frédéric Mohier",
   "description": "Store Shinken logs in MongoDB without Livestatus",
