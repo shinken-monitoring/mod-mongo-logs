@@ -110,7 +110,7 @@ class MongoLogs(BaseModule):
                          'Please install it with a 2.x+ version from '
                          'https://github.com/mongodb/mongo-python-driver/downloads')
             return None
-        self.database = getattr(modconf, 'database', 'logs')
+        self.database = getattr(modconf, 'database', 'shinken')
         logger.info('[mongo-logs] database: %s' % self.database)
         self.collection = getattr(modconf, 'collection', 'logs')
         logger.info('[mongo-logs] collection: %s' % self.collection)
