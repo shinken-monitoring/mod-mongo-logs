@@ -144,6 +144,9 @@ class MongoLogs(BaseModule):
         # Now sleep one second, so that won't get lineno collisions with the last second
         time.sleep(1)
         self.lineno = 0
+        
+        self.cache = {}
+        self.cache_backlog = []
 
     def load(self, app):
         self.app = app
@@ -168,6 +171,8 @@ class MongoLogs(BaseModule):
             
             self.db[self.collection].ensure_index([('host_name', pymongo.ASCENDING), ('time', pymongo.ASCENDING), ('lineno', pymongo.ASCENDING)], name='logs_idx')
             self.db[self.collection].ensure_index([('time', pymongo.ASCENDING), ('lineno', pymongo.ASCENDING)], name='time_1_lineno_1')
+            
+            self.db['availability'].ensure_index([('hostname', pymongo.ASCENDING), ('service', pymongo.ASCENDING), ('day', pymongo.ASCENDING)], name='availability')
             
             if self.replica_set:
                 pass
@@ -264,6 +269,218 @@ class MongoLogs(BaseModule):
         else:
             logger.info("[mongo-logs] This line is invalid: %s", line)
 
+    def manage_host_check_result_brok(self, b):
+        host_name = b.data['host_name']
+        logger.debug("[mongo-logs] host check result: %s is %s", host_name, b.data['state'])
+        start = time.time()
+        self.record_availability(host_name, '', b)
+        logger.debug("[mongo-logs] host check result: %s, %d seconds", host_name, time.time() - start)
+        
+    ## Update hosts/services availability
+    def record_availability(self, hostname, service, b):
+        # Insert/update in shinken state table
+        logger.debug("[mongo-logs] record availability: %s/%s: %s", hostname, service, b.data)
+            
+        # Host check brok:
+        # ----------------
+        # {'last_time_unreachable': 0, 'last_problem_id': 1, 'check_type': 1, 'retry_interval': 1, 'last_event_id': 1, 'problem_has_been_acknowledged': False, 'last_state': 'DOWN', 'latency': 0, 'last_state_type': 'HARD', 'last_hard_state_change': 1433822140, 'last_time_up': 1433822140, 'percent_state_change': 0.0, 'state': 'UP', 'last_chk': 1433822138, 'last_state_id': 0, 'end_time': 0, 'timeout': 0, 'current_event_id': 1, 'execution_time': 0, 'start_time': 0, 'return_code': 0, 'state_type': 'HARD', 'output': '', 'in_checking': False, 'early_timeout': 0, 'in_scheduled_downtime': False, 'attempt': 1, 'state_type_id': 1, 'acknowledgement_type': 1, 'last_state_change': 1433822140.825969, 'last_time_down': 1433821584, 'instance_id': 0, 'long_output': '', 'current_problem_id': 0, 'host_name': 'sim-0003', 'check_interval': 60, 'state_id': 0, 'has_been_checked': 1, 'perf_data': u''}
+        #
+        # Interesting information ...
+        # 'state_id': 0 / 'state': 'UP' / 'state_type': 'HARD'
+        # 'last_state_id': 0 / 'last_state': 'UP' / 'last_state_type': 'HARD'
+        # 'last_time_unreachable': 0 / 'last_time_up': 1433152221 / 'last_time_down': 0
+        # 'last_chk': 1433152220 / 'last_state_change': 1431420780.184517
+        # 'in_scheduled_downtime': False
+        
+        # Service check brok:
+        # -------------------
+        # {'last_problem_id': 0, 'check_type': 0, 'retry_interval': 2, 'last_event_id': 0, 'problem_has_been_acknowledged': False, 'last_time_critical': 0, 'last_time_warning': 0, 'end_time': 0, 'last_state': 'OK', 'latency': 0.2347090244293213, 'last_time_unknown': 0, 'last_state_type': 'HARD', 'last_hard_state_change': 1433736035, 'percent_state_change': 0.0, 'state': 'OK', 'last_chk': 1433785101, 'last_state_id': 0, 'host_name': u'shinken24', 'has_been_checked': 1, 'check_interval': 5, 'current_event_id': 0, 'execution_time': 0.062339067459106445, 'start_time': 0, 'return_code': 0, 'state_type': 'HARD', 'output': 'Ok : memory consumption is 37%', 'service_description': u'Memory', 'in_checking': False, 'early_timeout': 0, 'in_scheduled_downtime': False, 'attempt': 1, 'state_type_id': 1, 'acknowledgement_type': 1, 'last_state_change': 1433736035.927526, 'instance_id': 0, 'long_output': u'', 'current_problem_id': 0, 'last_time_ok': 1433785103, 'timeout': 0, 'state_id': 0, 'perf_data': u'cached=13%;;;0%;100% buffered=1%;;;0%;100% consumed=37%;80%;90%;0%;100% used=53%;;;0%;100% free=46%;;;0%;100% swap_used=0%;;;0%;100% swap_free=100%;;;0%;100% buffered_abs=36076KB;;;0KB;2058684KB used_abs=1094544KB;;;0KB;2058684KB cached_abs=284628KB;;;0KB;2058684KB consumed_abs=773840KB;;;0KB;2058684KB free_abs=964140KB;;;0KB;2058684KB total_abs=2058684KB;;;0KB;2058684KB swap_total=392188KB;;;0KB;392188KB swap_used=0KB;;;0KB;392188KB swap_free=392188KB;;;0KB;392188KB'}
+        #
+        # Interesting information ...
+        # 'state_id': 0 / 'state': 'OK' / 'state_type': 'HARD'
+        # 'last_state_id': 0 / 'last_state': 'OK' / 'last_state_type': 'HARD'
+        # 'last_time_critical': 0 / 'last_time_warning': 0 / 'last_time_unknown': 0 / 'last_time_ok': 1433785103
+        # 'last_chk': 1433785101 / 'last_state_change': 1433736035.927526
+        # 'in_scheduled_downtime': False
+        
+        # Only for simulated hosts ...
+        # if not hostname.startswith('kiosk-0001'):
+            # return
+            
+        # Only for host check at the moment ...
+        if not service is '':
+            return
+            
+        # Ignoring SOFT states ...
+        if b.data['state_type_id']==0:
+            logger.warning("[mongo-logs] record availability for: %s/%s, but no HARD state, ignoring ...", hostname, service)
+        
+        
+        midnight = datetime.datetime.combine(datetime.date.today(), datetime.time.min)
+        midnight_timestamp = time.mktime (midnight.timetuple())
+        # Number of seconds today ...
+        seconds_today = int(b.data['last_chk']) - midnight_timestamp
+        # Number of seconds since state changed
+        since_last_state = int(b.data['last_state_change']) - seconds_today
+        # Scheduled downtime
+        scheduled_downtime = bool(b.data['in_scheduled_downtime'])
+        # Day
+        day = datetime.date.today().strftime('%Y-%m-%d')
+
+        # Cache index ...
+        query = """%s/%s_%s""" % (hostname, service, day)
+        q = { "hostname": hostname, "service": service, "day": day }
+
+        # Database table
+        # --------------
+        # `hostname` varchar(255) CHARACTER SET latin1 DEFAULT NULL,
+        # `service` varchar(255) CHARACTER SET latin1 DEFAULT NULL,
+        # `day` DATE DEFAULT NULL,
+        # `is_downtime` tinyint(1) DEFAULT '0',
+        # `daily_0` int(6) DEFAULT '0',                 Up/Ok
+        # `daily_1` int(6) DEFAULT '0',                 Down/Warning
+        # `daily_2` int(6) DEFAULT '0',                 Unreachable/Critical
+        # `daily_3` int(6) DEFAULT '0',                 Unknown
+        # `daily_4` int(6) DEFAULT '86400',             Unchecked
+        # `daily_9` int(6) DEFAULT '0',                 Downtime
+        # --------------
+        
+        # Test if record for current day still exists
+        exists = False
+        try:
+            self.cache[query] = self.db['availability'].find_one( q )
+            if '_id' in self.cache[query]:
+                exists = True
+                logger.debug("[mongo-logs] found an existing record for: %s/%s - %s", hostname, service, day)
+        except Exception, exp:
+            logger.error("[WebUI-availability] Exception when querying database: %s", str(exp))
+        
+        # Configure recorded data
+        data = {}
+        data['hostname'] = hostname
+        data['service'] = service
+        data['day'] = day
+        data['is_downtime'] = '1' if bool(b.data['in_scheduled_downtime']) else '0'
+        # All possible states are 0 seconds duration.
+        data['daily_0'] = 0
+        data['daily_1'] = 0
+        data['daily_2'] = 0
+        data['daily_3'] = 0
+        data['daily_4'] = 0
+    
+        current_state = b.data['state']
+        current_state_id = b.data['state_id']
+        last_state = b.data['last_state']
+        # last_check_state = res[12] if exists else 3
+        last_check_state = self.cache[query]['last_check_state'] if exists else 3
+        # last_check_timestamp = res[13] if exists else midnight_timestamp
+        last_check_timestamp = self.cache[query]['last_check_timestamp'] if exists else midnight_timestamp
+        since_last_state = 0
+        logger.debug("[mongo-logs] current state: %s, last state: %s", current_state, last_state)
+        
+        # Host check
+        if service=='':
+            last_time_unreachable = b.data['last_time_unreachable']
+            last_time_up = b.data['last_time_up']
+            last_time_down = b.data['last_time_down']
+            last_state_change = b.data['last_state_change']
+            last_state_change = int(time.time())
+            
+            if current_state == 'UP':
+                since_last_state = int(last_state_change - last_check_timestamp)
+                    
+            elif current_state== 'UNREACHABLE':
+                since_last_state = int(last_state_change - last_check_timestamp)
+                    
+            elif current_state == 'DOWN':
+                since_last_state = int(last_state_change - last_check_timestamp)
+
+        # Service check
+        # else:
+            # To be implemented !!!
+            # if hostname.startswith('kiosk-0001'):
+                # logger.warning("[mongo-logs] last_time_unknown: %d", b.data['last_time_unknown'])
+                # logger.warning("[mongo-logs] last_time_ok: %d", b.data['last_time_ok'])
+                # logger.warning("[mongo-logs] last_time_warning: %d", b.data['last_time_warning'])
+                # logger.warning("[mongo-logs] last_time_critical: %d", b.data['last_time_critical'])
+        
+        # Update existing record
+        if exists:
+            data = self.cache[query]
+
+            # Update record
+            if since_last_state > seconds_today:
+                # Last state changed before today ...
+                
+                # Current state duration for all seconds of today
+                data["daily_%d" % data['last_check_state']] = seconds_today
+            else:
+                # Increase current state duration with seconds since last state
+                data["daily_%d" % data['last_check_state']] += (since_last_state)
+            
+            # Unchecked state for all day duration minus all states duration
+            data['daily_4'] = 86400
+            for value in [ data['daily_0'], data['daily_1'], data['daily_2'], data['daily_3'] ]:
+                data['daily_4'] -= value
+            
+            # Last check state and timestamp
+            data['last_check_state'] = current_state_id
+            data['last_check_timestamp'] = int(b.data['last_chk'])
+            
+            self.cache[query] = data
+                
+        # Create record
+        else:
+            # First check state and timestamp
+            data['first_check_state'] = current_state_id
+            data['first_check_timestamp'] = int(b.data['last_chk'])
+            
+            # Last check state and timestamp
+            data['last_check_state'] = current_state_id
+            data['last_check_timestamp'] = int(b.data['last_chk'])
+            
+            # Ignore computed values because it is the first check received today!
+            data['daily_4'] = 86400
+                
+            self.cache[query] = data
+
+        # Store cached values ...
+        try:
+            logger.warning("[mongo-logs] store for: %s", q)
+            self.db['availability'].save(self.cache[query])
+            self.cache[query] = self.db['availability'].find()
+                
+            self.is_connected = CONNECTED
+            # If we have a backlog from an outage, we flush these lines
+            # First we make a copy, so we can delete elements from
+            # the original cache backlog
+            backloglines = [bl for bl in self.cache_backlog]
+            for backlogline in backloglines:
+                try:
+                    self.db['availability'].insert(backlogline)
+                    self.cache_backlog.remove(backlogline)
+                except AutoReconnect, exp:
+                    self.is_connected = SWITCHING
+                except Exception, exp:
+                    logger.error("[mongo-logs] Got an exception inserting the availability backlog: %s", str(exp))
+        except AutoReconnect, exp:
+            if self.is_connected != SWITCHING:
+                self.is_connected = SWITCHING
+                time.sleep(5)
+                # Under normal circumstances after these 5 seconds
+                # we should have a new primary node
+            else:
+                # Not yet? Wait, but try harder.
+                time.sleep(0.1)
+            # At this point we must save the logline for a later attempt
+            # After 5 seconds we either have a successful write
+            # or another exception which means, we are disconnected
+            self.cache_backlog.append(self.cache[query])
+            
+        except Exception, exp:
+            self.is_connected = DISCONNECTED
+            logger.error("[mongo-logs] Database error occurred: %s", exp)
+            # raise MongoLogsError
 
     def main(self):
         self.set_proctitle(self.name)
