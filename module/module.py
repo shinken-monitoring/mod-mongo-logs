@@ -325,11 +325,13 @@ class MongoLogs(BaseModule):
         # Scheduled downtime
         scheduled_downtime = bool(b.data['in_scheduled_downtime'])
         # Day
-        day = datetime.date.today().strftime('%Y-%m-%d')
+        day = datetime.date.today()
+        yesterday = day - datetime.timedelta(days=1)
 
         # Cache index ...
         query = """%s/%s_%s""" % (hostname, service, day)
-        q = { "hostname": hostname, "service": service, "day": day }
+        q_day = { "hostname": hostname, "service": service, "day": day.strftime('%Y-%m-%d') }
+        q_yesterday = { "hostname": hostname, "service": service, "day": yesterday.strftime('%Y-%m-%d') }
 
         # Database table
         # --------------
@@ -348,12 +350,19 @@ class MongoLogs(BaseModule):
         # Test if record for current day still exists
         exists = False
         try:
-            self.cache[query] = self.db['availability'].find_one( q )
+            self.cache[query] = self.db['availability'].find_one( q_day )
             if '_id' in self.cache[query]:
                 exists = True
-                logger.info("[mongo-logs] found an existing record for: %s/%s - %s", hostname, service, day)
+                logger.info("[mongo-logs] found a today record for: %s", query)
+                
+                # Test if yesterday record exists ...
+                # data_yesterday = self.db['availability'].find_one( q_yesterday )
+                # if '_id' in data_yesterday:
+                    # exists = True
+                    # logger.info("[mongo-logs] found a yesterday record for: %s", query)
         except Exception, exp:
             logger.error("[WebUI-availability] Exception when querying database: %s", str(exp))
+            return
         
         # Configure recorded data
     
@@ -411,7 +420,7 @@ class MongoLogs(BaseModule):
             data = {}
             data['hostname'] = hostname
             data['service'] = service
-            data['day'] = day
+            data['day'] = day.strftime('%Y-%m-%d')
             data['day_ts'] = midnight_timestamp
             data['is_downtime'] = '1' if bool(b.data['in_scheduled_downtime']) else '0'
             
@@ -442,7 +451,7 @@ class MongoLogs(BaseModule):
             
         # Store cached values ...
         try:
-            logger.warning("[mongo-logs] store for: %s: %s", q, self.cache[query])
+            logger.warning("[mongo-logs] store for: %s", self.cache[query])
             self.db['availability'].save(self.cache[query])
             # self.cache[query] = self.db['availability'].find()
                 
