@@ -351,22 +351,11 @@ class MongoLogs(BaseModule):
             self.cache[query] = self.db['availability'].find_one( q )
             if '_id' in self.cache[query]:
                 exists = True
-                logger.debug("[mongo-logs] found an existing record for: %s/%s - %s", hostname, service, day)
+                logger.info("[mongo-logs] found an existing record for: %s/%s - %s", hostname, service, day)
         except Exception, exp:
             logger.error("[WebUI-availability] Exception when querying database: %s", str(exp))
         
         # Configure recorded data
-        data = {}
-        data['hostname'] = hostname
-        data['service'] = service
-        data['day'] = day
-        data['is_downtime'] = '1' if bool(b.data['in_scheduled_downtime']) else '0'
-        # All possible states are 0 seconds duration.
-        data['daily_0'] = 0
-        data['daily_1'] = 0
-        data['daily_2'] = 0
-        data['daily_3'] = 0
-        data['daily_4'] = 0
     
         current_state = b.data['state']
         current_state_id = b.data['state_id']
@@ -404,51 +393,58 @@ class MongoLogs(BaseModule):
                 # logger.warning("[mongo-logs] last_time_warning: %d", b.data['last_time_warning'])
                 # logger.warning("[mongo-logs] last_time_critical: %d", b.data['last_time_critical'])
         
-        # Update existing record
         if exists:
+            # Update existing record
             data = self.cache[query]
 
             # Update record
             if since_last_state > seconds_today:
                 # Last state changed before today ...
-                
                 # Current state duration for all seconds of today
                 data["daily_%d" % data['last_check_state']] = seconds_today
             else:
                 # Increase current state duration with seconds since last state
                 data["daily_%d" % data['last_check_state']] += (since_last_state)
             
-            # Unchecked state for all day duration minus all states duration
-            data['daily_4'] = 86400
-            for value in [ data['daily_0'], data['daily_1'], data['daily_2'], data['daily_3'] ]:
-                data['daily_4'] -= value
-            
-            # Last check state and timestamp
-            data['last_check_state'] = current_state_id
-            data['last_check_timestamp'] = int(b.data['last_chk'])
-            
-            self.cache[query] = data
-                
-        # Create record
         else:
+            # Create record
+            data = {}
+            data['hostname'] = hostname
+            data['service'] = service
+            data['day'] = day
+            data['day_ts'] = midnight_timestamp
+            data['is_downtime'] = '1' if bool(b.data['in_scheduled_downtime']) else '0'
+            
+            # All possible states are 0 seconds duration.
+            data['daily_0'] = 0
+            data['daily_1'] = 0
+            data['daily_2'] = 0
+            data['daily_3'] = 0
+            data['daily_4'] = 0
+            
             # First check state and timestamp
             data['first_check_state'] = current_state_id
             data['first_check_timestamp'] = int(b.data['last_chk'])
-            
-            # Last check state and timestamp
-            data['last_check_state'] = current_state_id
-            data['last_check_timestamp'] = int(b.data['last_chk'])
-            
-            # Ignore computed values because it is the first check received today!
-            data['daily_4'] = 86400
                 
-            self.cache[query] = data
+        # Update cache ...
+        self.cache[query] = data
 
+        # Unchecked state for all day duration minus all states duration
+        data['daily_4'] = 86400
+        for value in [ data['daily_0'], data['daily_1'], data['daily_2'], data['daily_3'] ]:
+            data['daily_4'] -= int(value)
+        
+        # Last check state and timestamp
+        data['last_check_state'] = current_state_id
+        data['last_check_timestamp'] = int(b.data['last_chk'])
+        
+        self.cache[query] = data
+            
         # Store cached values ...
         try:
-            logger.warning("[mongo-logs] store for: %s", q)
+            logger.warning("[mongo-logs] store for: %s: %s", q, self.cache[query])
             self.db['availability'].save(self.cache[query])
-            self.cache[query] = self.db['availability'].find()
+            # self.cache[query] = self.db['availability'].find()
                 
             self.is_connected = CONNECTED
             # If we have a backlog from an outage, we flush these lines
