@@ -35,6 +35,7 @@ import datetime
 import re
 import sys
 import pymongo
+import traceback
 
 from shinken.objects.service import Service
 from shinken.modulesctx import modulesctx
@@ -96,13 +97,10 @@ class MongoLogs(BaseModule):
 
     def __init__(self, modconf):
         BaseModule.__init__(self, modconf)
-        self.plugins = []
+
         # mongodb://host1,host2,host3/?safe=true;w=2;wtimeoutMS=2000
         self.mongodb_uri = getattr(modconf, 'mongodb_uri', None)
         logger.info('[mongo-logs] mongo uri: %s' % self.mongodb_uri)
-        self.mongodb_host = getattr(modconf, 'mongodb_host', 'localhost')
-        self.mongodb_port = int(getattr(modconf, 'mongodb_port', '27017'))
-        logger.info("[mongo-logs] mongodb host:port: %s:%d", self.mongodb_host, self.mongodb_port)
         self.replica_set = getattr(modconf, 'replica_set', None)
         if self.replica_set and not ReplicaSetConnection:
             logger.error('[mongo-logs] Can not initialize LogStoreMongoDB module with '
@@ -321,7 +319,7 @@ class MongoLogs(BaseModule):
         # Number of seconds today ...
         seconds_today = int(b.data['last_chk']) - midnight_timestamp
         # Number of seconds since state changed
-        since_last_state = int(b.data['last_state_change']) - seconds_today
+        since_last_check = int(b.data['last_state_change']) - seconds_today
         # Scheduled downtime
         scheduled_downtime = bool(b.data['in_scheduled_downtime'])
         # Day
@@ -349,6 +347,7 @@ class MongoLogs(BaseModule):
         
         # Test if record for current day still exists
         exists = False
+        # if query in self.cache:
         try:
             self.cache[query] = self.db['availability'].find_one( q_day )
             if '_id' in self.cache[query]:
@@ -361,8 +360,8 @@ class MongoLogs(BaseModule):
                     # exists = True
                     # logger.info("[mongo-logs] found a yesterday record for: %s", query)
         except Exception, exp:
-            logger.error("[WebUI-availability] Exception when querying database: %s", str(exp))
-            return
+            logger.error("[mongo-logs] Exception when querying database: %s", str(exp))
+            # return
         
         # Configure recorded data
     
@@ -373,7 +372,7 @@ class MongoLogs(BaseModule):
         last_check_state = self.cache[query]['last_check_state'] if exists else 3
         # last_check_timestamp = res[13] if exists else midnight_timestamp
         last_check_timestamp = self.cache[query]['last_check_timestamp'] if exists else midnight_timestamp
-        since_last_state = 0
+        since_last_check = 0
         logger.debug("[mongo-logs] current state: %s, last state: %s", current_state, last_state)
         
         # Host check
@@ -382,21 +381,23 @@ class MongoLogs(BaseModule):
             last_time_up = b.data['last_time_up']
             last_time_down = b.data['last_time_down']
             last_state_change = b.data['last_state_change']
-            last_state_change = int(time.time())
+            last_check = b.data['last_chk']
+            # last_state_change = int(time.time())
             
             if current_state == 'UP':
-                since_last_state = int(last_state_change - last_check_timestamp)
+                since_last_check = int(last_check - last_check_timestamp)
                     
             elif current_state== 'UNREACHABLE':
-                since_last_state = int(last_state_change - last_check_timestamp)
+                since_last_check = int(last_check - last_check_timestamp)
                     
             elif current_state == 'DOWN':
-                since_last_state = int(last_state_change - last_check_timestamp)
+                since_last_check = int(last_check - last_check_timestamp)
 
         # Service check
         # else:
             # To be implemented !!!
             # if hostname.startswith('kiosk-0001'):
+                # logger.warning("[mongo-logs] last_state_change: %d", last_state_change)
                 # logger.warning("[mongo-logs] last_time_unknown: %d", b.data['last_time_unknown'])
                 # logger.warning("[mongo-logs] last_time_ok: %d", b.data['last_time_ok'])
                 # logger.warning("[mongo-logs] last_time_warning: %d", b.data['last_time_warning'])
@@ -407,13 +408,13 @@ class MongoLogs(BaseModule):
             data = self.cache[query]
 
             # Update record
-            if since_last_state > seconds_today:
+            if since_last_check > seconds_today:
                 # Last state changed before today ...
                 # Current state duration for all seconds of today
                 data["daily_%d" % data['last_check_state']] = seconds_today
             else:
                 # Increase current state duration with seconds since last state
-                data["daily_%d" % data['last_check_state']] += (since_last_state)
+                data["daily_%d" % data['last_check_state']] += (since_last_check)
             
         else:
             # Create record
