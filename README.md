@@ -9,8 +9,10 @@ No need for Livestatus !
 
 Requirements 
 =============
+Use pymongo version > 3.0.
+
 ```
-   apt-get install pymongo
+   pip install pymongo
 ```
 
 
@@ -51,7 +53,7 @@ define module {
    database        shinken
    
    # Logs collection name
-   collection      logs
+   logs_collection      logs
    
    # Logs rotation
    # Remove logs older than the specified value
