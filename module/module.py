@@ -52,13 +52,16 @@ from .log_line import (
 )
 
 
-from pymongo import Connection
 try:
-    from pymongo import ReplicaSetConnection, ReadPreference
+    import pymongo
+    from pymongo import MongoClient
+    from pymongo.errors import AutoReconnect
 except ImportError:
-    ReplicaSetConnection = None
-    ReadPreference = None
-from pymongo.errors import AutoReconnect
+    logger.error('[MongoDB Module] Can not import pymongo and/or MongoClient'
+                 'Your pymongo lib is too old. '
+                 'Please install it with a 3.x+ version from '
+                 'https://pypi.python.org/pypi/pymongo')
+    MongoClient = None
 
 from shinken.basemodule import BaseModule
 from shinken.objects.module import Module
@@ -98,26 +101,35 @@ class MongoLogs(BaseModule):
     def __init__(self, modconf):
         BaseModule.__init__(self, modconf)
 
-        # mongodb://host1,host2,host3/?safe=true;w=2;wtimeoutMS=2000
-        self.mongodb_uri = getattr(modconf, 'mongodb_uri', None)
-        logger.info('[mongo-logs] mongo uri: %s' % self.mongodb_uri)
+        self.uri = getattr(modconf, 'uri', None)
+        logger.info('[mongo-logs] mongo uri: %s', self.uri)
+        
         self.replica_set = getattr(modconf, 'replica_set', None)
-        if self.replica_set and not ReplicaSetConnection:
-            logger.error('[mongo-logs] Can not initialize LogStoreMongoDB module with '
+        if self.replica_set and int(pymongo.version[0]) < 3:
+            logger.error('[MongoDB Module] Can not initialize module with '
                          'replica_set because your pymongo lib is too old. '
-                         'Please install it with a 2.x+ version from '
-                         'https://github.com/mongodb/mongo-python-driver/downloads')
+                         'Please install it with a 3.x+ version from '
+                         'https://pypi.python.org/pypi/pymongo')
             return None
+
         self.database = getattr(modconf, 'database', 'shinken')
-        logger.info('[mongo-logs] database: %s' % self.database)
-        self.collection = getattr(modconf, 'collection', 'logs')
-        logger.info('[mongo-logs] collection: %s' % self.collection)
-        self.use_aggressive_sql = True
+        logger.info('[mongo-logs] database: %s', self.database)
+        
+        self.username = getattr(modconf, 'username', None)
+        self.password = getattr(modconf, 'password', None)
+        
+        self.logs_collection = getattr(modconf, 'logs_collection', 'logs')
+        logger.info('[mongo-logs] collection: %s', self.logs_collection)
+        
+        self.hav_collection = getattr(modconf, 'hav_collection', 'logs')
+        logger.info('[mongo-logs] hosts availability collection: %s', self.hav_collection)
+        
         self.mongodb_fsync = to_bool(getattr(modconf, 'mongodb_fsync', "True"))
+        
         max_logs_age = getattr(modconf, 'max_logs_age', '365')
         maxmatch = re.match(r'^(\d+)([dwmy]*)$', max_logs_age)
         if maxmatch is None:
-            logger.info('[mongo-logs] Wrong format for max_logs_age. Must be <number>[d|w|m|y] or <number> and not %s' % max_logs_age)
+            logger.error('[mongo-logs] Wrong format for max_logs_age. Must be <number>[d|w|m|y] or <number> and not %s' % max_logs_age)
             return None
         else:
             if not maxmatch.group(2):
@@ -130,15 +142,11 @@ class MongoLogs(BaseModule):
                 self.max_logs_age = int(maxmatch.group(1)) * 31
             elif maxmatch.group(2) == 'y':
                 self.max_logs_age = int(maxmatch.group(1)) * 365
-        logger.info('[mongo-logs] max_logs_age: %s' % self.max_logs_age)
-        self.use_aggressive_sql = (getattr(modconf, 'use_aggressive_sql', '1') == '1')
-        # This stack is used to create a full-blown select-statement
-        # self.mongo_filter_stack = LiveStatusMongoStack()
-        # This stack is used to create a minimal select-statement which
-        # selects only by time >= and time <=
-        # self.mongo_time_filter_stack = LiveStatusMongoStack()
+        logger.info('[mongo-logs] max_logs_age: %s', self.max_logs_age)
+
         self.is_connected = DISCONNECTED
         self.backlog = []
+        
         # Now sleep one second, so that won't get lineno collisions with the last second
         time.sleep(1)
         self.lineno = 0
@@ -155,40 +163,32 @@ class MongoLogs(BaseModule):
     def open(self):
         try:
             if self.replica_set:
-                self.conn = pymongo.ReplicaSetConnection(self.mongodb_uri, replicaSet=self.replica_set, fsync=self.mongodb_fsync)
+                self.con = MongoClient(self.uri, replicaSet=self.replica_set, fsync=self.mongodb_fsync)
             else:
-                # Old versions of pymongo do not known about fsync
-                if ReplicaSetConnection:
-                    self.conn = pymongo.Connection(self.mongodb_uri, fsync=self.mongodb_fsync)
-                else:
-                    self.conn = pymongo.Connection(self.mongodb_uri)
-            logger.info("[mongo-logs] connected to mongodb: %s", self.mongodb_uri)
-            
-            self.db = self.conn[self.database]
+                self.con = MongoClient(self.uri, fsync=self.mongodb_fsync)
+            logger.info("[mongo-logs] connected to mongodb: %s", self.uri)
+
+            self.db = getattr(self.con, self.database)
             logger.info("[mongo-logs] connected to the database: %s", self.database)
             
-            self.db[self.collection].ensure_index([('host_name', pymongo.ASCENDING), ('time', pymongo.ASCENDING), ('lineno', pymongo.ASCENDING)], name='logs_idx')
-            self.db[self.collection].ensure_index([('time', pymongo.ASCENDING), ('lineno', pymongo.ASCENDING)], name='time_1_lineno_1')
-            
-            self.db['availability'].ensure_index([('hostname', pymongo.ASCENDING), ('service', pymongo.ASCENDING), ('day', pymongo.ASCENDING)], name='availability')
-            
-            if self.replica_set:
-                pass
-                # This might be a future option prefer_secondary
-                #self.db.read_preference = ReadPreference.SECONDARY
+            if self.username and self.password:
+                self.db.authenticate(self.username, self.password)
+                logger.info("[mongo-logs] user authenticated: %s", self.username)
+                
             self.is_connected = CONNECTED
             self.next_log_db_rotate = time.time()
+            
             logger.info('[mongo-logs] database connection established')
         except AutoReconnect, exp:
             # now what, ha?
-            logger.error("[mongo-logs] MongoLogs.AutoReconnect: %s" % (exp))
+            logger.error("[mongo-logs] MongoLogs.AutoReconnect: %s", exp)
             # The mongodb is hopefully available until this module is restarted
             raise MongoLogsError
         except Exception, exp:
             # If there is a replica_set, but the host is a simple standalone one
             # we get a "No suitable hosts found" here.
             # But other reasons are possible too.
-            logger.error("[mongo-logs] Could not open the database" % exp)
+            logger.error("[mongo-logs] Could not open the database", exp)
             raise MongoLogsError
 
     def close(self):
@@ -207,7 +207,7 @@ class MongoLogs(BaseModule):
             today0000 = datetime.datetime(today.year, today.month, today.day, 0, 0, 0)
             today0005 = datetime.datetime(today.year, today.month, today.day, 0, 5, 0)
             oldest = today0000 - datetime.timedelta(days=self.max_logs_age)
-            self.db[self.collection].remove({u'time': {'$lt': time.mktime(oldest.timetuple())}})
+            self.db[self.logs_collection].remove({u'time': {'$lt': time.mktime(oldest.timetuple())}})
             logger.info("[mongo-logs] removed logs older than %s days.", self.max_logs_age)
 
             if now < time.mktime(today0005.timetuple()):
@@ -233,7 +233,7 @@ class MongoLogs(BaseModule):
         if logline.logclass != LOGCLASS_INVALID:
             logger.debug('[mongo-logs] store values: %s', values)
             try:
-                self.db[self.collection].insert(values)
+                self.db[self.logs_collection].insert(values)
                 self.is_connected = CONNECTED
                 # If we have a backlog from an outage, we flush these lines
                 # First we make a copy, so we can delete elements from
@@ -241,7 +241,7 @@ class MongoLogs(BaseModule):
                 backloglines = [bl for bl in self.backlog]
                 for backlogline in backloglines:
                     try:
-                        self.db[self.collection].insert(backlogline)
+                        self.db[self.logs_collection].insert(backlogline)
                         self.backlog.remove(backlogline)
                     except AutoReconnect, exp:
                         self.is_connected = SWITCHING
@@ -310,16 +310,14 @@ class MongoLogs(BaseModule):
             return
             
         # Ignoring SOFT states ...
-        if b.data['state_type_id']==0:
-            logger.warning("[mongo-logs] record availability for: %s/%s, but no HARD state, ignoring ...", hostname, service)
+        # if b.data['state_type_id']==0:
+            # logger.warning("[mongo-logs] record availability for: %s/%s, but no HARD state, ignoring ...", hostname, service)
         
         
         midnight = datetime.datetime.combine(datetime.date.today(), datetime.time.min)
         midnight_timestamp = time.mktime (midnight.timetuple())
         # Number of seconds today ...
         seconds_today = int(b.data['last_chk']) - midnight_timestamp
-        # Number of seconds since state changed
-        since_last_check = int(b.data['last_state_change']) - seconds_today
         # Scheduled downtime
         scheduled_downtime = bool(b.data['in_scheduled_downtime'])
         # Day
@@ -330,32 +328,17 @@ class MongoLogs(BaseModule):
         query = """%s/%s_%s""" % (hostname, service, day)
         q_day = { "hostname": hostname, "service": service, "day": day.strftime('%Y-%m-%d') }
         q_yesterday = { "hostname": hostname, "service": service, "day": yesterday.strftime('%Y-%m-%d') }
-
-        # Database table
-        # --------------
-        # `hostname` varchar(255) CHARACTER SET latin1 DEFAULT NULL,
-        # `service` varchar(255) CHARACTER SET latin1 DEFAULT NULL,
-        # `day` DATE DEFAULT NULL,
-        # `is_downtime` tinyint(1) DEFAULT '0',
-        # `daily_0` int(6) DEFAULT '0',                 Up/Ok
-        # `daily_1` int(6) DEFAULT '0',                 Down/Warning
-        # `daily_2` int(6) DEFAULT '0',                 Unreachable/Critical
-        # `daily_3` int(6) DEFAULT '0',                 Unknown
-        # `daily_4` int(6) DEFAULT '86400',             Unchecked
-        # `daily_9` int(6) DEFAULT '0',                 Downtime
-        # --------------
         
         # Test if record for current day still exists
         exists = False
-        # if query in self.cache:
         try:
-            self.cache[query] = self.db['availability'].find_one( q_day )
+            self.cache[query] = self.db[self.hav_collection].find_one( q_day )
             if '_id' in self.cache[query]:
                 exists = True
-                logger.info("[mongo-logs] found a today record for: %s", query)
+                logger.debug("[mongo-logs] found a today record for: %s", query)
                 
                 # Test if yesterday record exists ...
-                # data_yesterday = self.db['availability'].find_one( q_yesterday )
+                # data_yesterday = self.db[self.hav_collection].find_one( q_yesterday )
                 # if '_id' in data_yesterday:
                     # exists = True
                     # logger.info("[mongo-logs] found a yesterday record for: %s", query)
@@ -364,13 +347,10 @@ class MongoLogs(BaseModule):
             # return
         
         # Configure recorded data
-    
         current_state = b.data['state']
         current_state_id = b.data['state_id']
         last_state = b.data['last_state']
-        # last_check_state = res[12] if exists else 3
         last_check_state = self.cache[query]['last_check_state'] if exists else 3
-        # last_check_timestamp = res[13] if exists else midnight_timestamp
         last_check_timestamp = self.cache[query]['last_check_timestamp'] if exists else midnight_timestamp
         since_last_check = 0
         logger.debug("[mongo-logs] current state: %s, last state: %s", current_state, last_state)
@@ -382,16 +362,16 @@ class MongoLogs(BaseModule):
             last_time_down = b.data['last_time_down']
             last_state_change = b.data['last_state_change']
             last_check = b.data['last_chk']
-            # last_state_change = int(time.time())
+            since_last_check = int(last_check - last_check_timestamp)
             
-            if current_state == 'UP':
-                since_last_check = int(last_check - last_check_timestamp)
+            # if current_state == 'UP':
+                # since_last_check = int(last_check - last_check_timestamp)
                     
-            elif current_state== 'UNREACHABLE':
-                since_last_check = int(last_check - last_check_timestamp)
+            # elif current_state== 'UNREACHABLE':
+                # since_last_check = int(last_check - last_check_timestamp)
                     
-            elif current_state == 'DOWN':
-                since_last_check = int(last_check - last_check_timestamp)
+            # elif current_state == 'DOWN':
+                # since_last_check = int(last_check - last_check_timestamp)
 
         # Service check
         # else:
@@ -453,8 +433,7 @@ class MongoLogs(BaseModule):
         # Store cached values ...
         try:
             logger.warning("[mongo-logs] store for: %s", self.cache[query])
-            self.db['availability'].save(self.cache[query])
-            # self.cache[query] = self.db['availability'].find()
+            self.db[self.hav_collection].save(self.cache[query])
                 
             self.is_connected = CONNECTED
             # If we have a backlog from an outage, we flush these lines
@@ -463,7 +442,7 @@ class MongoLogs(BaseModule):
             backloglines = [bl for bl in self.cache_backlog]
             for backlogline in backloglines:
                 try:
-                    self.db['availability'].insert(backlogline)
+                    self.db[self.hav_collection].insert(backlogline)
                     self.cache_backlog.remove(backlogline)
                 except AutoReconnect, exp:
                     self.is_connected = SWITCHING
@@ -486,7 +465,7 @@ class MongoLogs(BaseModule):
         except Exception, exp:
             self.is_connected = DISCONNECTED
             logger.error("[mongo-logs] Database error occurred: %s", exp)
-            # raise MongoLogsError
+            raise MongoLogsError
 
     def main(self):
         self.set_proctitle(self.name)
