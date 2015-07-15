@@ -39,9 +39,10 @@ Default configuration needs to be tuned up to your MongoDB configuration.
 ## Loaded by:   Broker
 # Store the Shinken logs in a mongodb database, so anyone can query them ...
 define module {
-   module_name     mongo-logs
-   module_type     mongo-logs
-   mongodb_uri     mongodb://localhost/?safe=false  ; Set to your value
+   module_name         mongo-logs
+   module_type         mongo-logs
+   
+   uri                 mongodb://localhost
    
    # If you are running a MongoDB cluster (called a “replica set” in MongoDB),
    # you need to specify it's name here. 
@@ -50,10 +51,10 @@ define module {
    #replica_set
 
    # Database name where to store the logs collection
-   database        shinken
+   database            shinken
    
    # Logs collection name
-   logs_collection      logs
+   logs_collection     logs
    
    # Logs rotation
    # Remove logs older than the specified value
@@ -61,6 +62,9 @@ define module {
    # 1d: 1 day
    # 3m: 3 months ...
    max_logs_age    3m  ; d = days, w = weeks, m = months, y = years
+   
+   # Hosts availability collection name
+   hav_collection      availability
 }
 ```
 
