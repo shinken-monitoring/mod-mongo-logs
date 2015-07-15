@@ -3,7 +3,12 @@ Shinken logs MongoDB storage
 
 Shinken module for storing Shinken logs to mongodb from the Broker daemon
 
-No need for Livestatus !
+No need for Livestatus to store Shinken logs and hosts availability data.
+
+This module is a must-have for some Shinken Web UI features: host/service history, Shinken activity, hosts availability, ...
+
+
+**Please note that this module is still on tests ... and do not hesitate to report any issue!**
 
 
 
