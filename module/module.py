@@ -231,7 +231,7 @@ class MongoLogs(BaseModule):
         logline = Logline(line=line)
         values = logline.as_dict()
         if logline.logclass != LOGCLASS_INVALID:
-            logger.debug('[mongo-logs] store values: %s', values)
+            logger.debug('[mongo-logs] store log line values: %s', values)
             try:
                 self.db[self.logs_collection].insert(values)
                 self.is_connected = CONNECTED
@@ -342,6 +342,8 @@ class MongoLogs(BaseModule):
                 # if '_id' in data_yesterday:
                     # exists = True
                     # logger.info("[mongo-logs] found a yesterday record for: %s", query)
+        except TypeError, exp:
+            logger.error("[mongo-logs] Exception when querying database - no cache query available: %s", str(exp))
         except Exception, exp:
             logger.error("[mongo-logs] Exception when querying database: %s", str(exp))
             # return
@@ -432,7 +434,7 @@ class MongoLogs(BaseModule):
             
         # Store cached values ...
         try:
-            logger.warning("[mongo-logs] store for: %s", self.cache[query])
+            logger.debug("[mongo-logs] store for: %s", self.cache[query])
             self.db[self.hav_collection].save(self.cache[query])
                 
             self.is_connected = CONNECTED
@@ -474,6 +476,7 @@ class MongoLogs(BaseModule):
         db_commit_next_time = time.time()
 
         while not self.interrupted:
+            logger.debug("[mongo-logs] queue length: %s", self.to_q.qsize())
             now = time.time()
 
             if db_commit_next_time < now:
@@ -485,3 +488,5 @@ class MongoLogs(BaseModule):
             for b in l:
                 b.prepare()
                 self.manage_brok(b)
+
+            logger.debug("[mongo-logs] time to manage %s broks (%d secs)", len(l), time.time() - now)
