@@ -69,16 +69,16 @@ from shinken.log import logger
 from shinken.util import to_bool
 
 properties = {
-    'daemons': ['broker'],
+    'daemons': ['broker', 'webui'],
     'type': 'mongo-logs',
-    'external': True,
+    'external': False,
     'phases': ['running'],
     }
 
 
 # called by the plugin manager
 def get_instance(plugin):
-    logger.info("[mongo-logs] Get an LogStore MongoDB module for plugin %s" % plugin.get_name())
+    logger.info("[mongo-logs] got an instance of MongoLogs for module: %s", plugin.get_name())
     instance = MongoLogs(plugin)
     return instance
 
@@ -143,6 +143,9 @@ class MongoLogs(BaseModule):
             elif maxmatch.group(2) == 'y':
                 self.max_logs_age = int(maxmatch.group(1)) * 365
         logger.info('[mongo-logs] max_logs_age: %s', self.max_logs_age)
+
+        self.max_records = int(getattr(modconf, 'max_records', '200'))
+        logger.info('[mongo-logs] max records: %s' % self.max_records)
 
         self.is_connected = DISCONNECTED
         self.backlog = []
@@ -469,6 +472,138 @@ class MongoLogs(BaseModule):
             logger.error("[mongo-logs] Database error occurred: %s", exp)
             raise MongoLogsError
 
+######################## WebUI availability part ############################
+
+    # We will get in the mongodb database the host availability
+    def get_ui_availability(self, name, range_start=None, range_end=None):
+        if not self.db:
+            logger.error("[MongoDB] error Problem during init phase, no database connection")
+            return None
+
+        logger.debug("[MongoDB] get_ui_availability, name: %s", name)
+        hostname = None
+        service = None
+        if name is not None:
+            hostname = name
+            if '/' in name:
+                service = name.split('/')[1]
+                hostname = name.split('/')[0]
+        logger.debug("[MongoDB] get_ui_availability, host/service: %s/%s", hostname, service)
+
+        records=[]
+        try:
+            logger.debug("[MongoDB] Fetching records from database for host/service: '%s/%s'", hostname, service)
+
+            query = []
+            if hostname is not None:
+                query.append( { "hostname" : { "$in": [ hostname ] }} )
+            if service is not None:
+                query.append( { "service" : { "$in": [ service ] }} )
+            if range_start:
+                query.append( { 'day_ts': { '$gte': range_start } } )
+            if range_end:
+                query.append( { 'day_ts': { '$lte': range_end } } )
+
+            if len(query) > 0:
+                logger.info("[MongoDB] Fetching records from database with query: '%s'", query)
+
+                for log in self.db[self.hav_collection].find({'$and': query}).sort([
+                                    ("day",pymongo.DESCENDING), 
+                                    ("hostname",pymongo.ASCENDING), 
+                                    ("service",pymongo.ASCENDING)]).limit(self.max_records):
+                    if '_id' in log:
+                        del log['_id']
+                    records.append(log)
+            else:
+                for log in self.db[self.hav_collection].find().sort([
+                                    ("day",pymongo.DESCENDING), 
+                                    ("hostname",pymongo.ASCENDING), 
+                                    ("service",pymongo.ASCENDING)]).limit(self.max_records):
+                    if '_id' in log:
+                        del log['_id']
+                    records.append(log)
+
+            logger.debug("[MongoDB] %d records fetched from database.", len(records))
+        except Exception, exp:
+            logger.error("[MongoDB] Exception when querying database: %s", str(exp))
+
+        return records
+
+
+
+######################## WebUI logs part ############################
+
+    # We will get in the mongodb database the logs
+    def get_ui_logs(self, name, logs_type=None):
+        if not self.db:
+            logger.error("[MongoDB] error Problem during init phase, no database connection")
+            return None
+
+        logger.debug("[MongoDB] get_ui_logs, name: %s", name)
+        hostname = None
+        service = None
+        if name is not None:
+            hostname = name
+            if '/' in name:
+                service = name.split('/')[1]
+                hostname = name.split('/')[0]
+        logger.debug("[MongoDB] get_ui_logs, host/service: %s/%s", hostname, service)
+
+        records=[]
+        try:
+            logger.debug("[MongoDB] Fetching records from database for host/service: '%s/%s'", hostname, service)
+
+            query = []
+            if hostname is not None:
+                query.append( { "host_name" : { "$in": [ hostname ] }} )
+            if service is not None:
+                query.append( { "service_description" : { "$in": [ service ] }} )
+            if logs_type and len(logs_type) > 0 and logs_type[0] != '':
+                query.append({ "type" : { "$in": logs_type }})
+            # if range_start:
+                # query.append( { 'day_ts': { '$gte': range_start } } )
+            # if range_end:
+                # query.append( { 'day_ts': { '$lte': range_end } } )
+
+            if len(query) > 0:
+                logger.debug("[MongoDB] Fetching records from database with query: '%s'", query)
+
+                for log in self.db[self.logs_collection].find({'$and': query}).sort([
+                                    ("time",pymongo.DESCENDING)]).limit(self.max_records):
+                    message = log['message']
+                    m = re.search(r"\[(\d+)\] (.*)", message)
+                    if m and m.group(2):
+                        message = m.group(2)
+                        
+                    records.append({
+                        "timestamp":    int(log["time"]),
+                        "host":         log['host_name'],
+                        "service":      log['service_description'],
+                        "message":      message
+                    })
+
+            else:
+                for log in self.db[self.logs_collection].find().sort([
+                                    ("day",pymongo.DESCENDING)]).limit(self.max_records):
+                    message = log['message']
+                    m = re.search(r"\[(\d+)\] (.*)", message)
+                    if m and m.group(2):
+                        message = m.group(2)
+                        
+                    records.append({
+                        "timestamp":    int(log["time"]),
+                        "host":         log['host_name'],
+                        "service":      log['service_description'],
+                        "message":      message
+                    })
+
+            logger.debug("[MongoDB] %d records fetched from database.", len(records))
+        except Exception, exp:
+            logger.error("[MongoDB] Exception when querying database: %s", str(exp))
+
+        return records
+        
+        
     def main(self):
         self.set_proctitle(self.name)
         self.set_exit_handler()
