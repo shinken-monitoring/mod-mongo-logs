@@ -98,13 +98,13 @@ class MongoLogsError(Exception):
 
 class MongoLogs(BaseModule):
 
-    def __init__(self, modconf):
-        BaseModule.__init__(self, modconf)
+    def __init__(self, mod_conf):
+        BaseModule.__init__(self, mod_conf)
 
-        self.uri = getattr(modconf, 'uri', None)
+        self.uri = getattr(mod_conf, 'uri', 'mongodb://localhost')
         logger.info('[mongo-logs] mongo uri: %s', self.uri)
         
-        self.replica_set = getattr(modconf, 'replica_set', None)
+        self.replica_set = getattr(mod_conf, 'replica_set', None)
         if self.replica_set and int(pymongo.version[0]) < 3:
             logger.error('[mongo-logs] Can not initialize module with '
                          'replica_set because your pymongo lib is too old. '
@@ -112,21 +112,21 @@ class MongoLogs(BaseModule):
                          'https://pypi.python.org/pypi/pymongo')
             return None
 
-        self.database = getattr(modconf, 'database', 'shinken')
+        self.database = getattr(mod_conf, 'database', 'shinken')
         logger.info('[mongo-logs] database: %s', self.database)
         
-        self.username = getattr(modconf, 'username', None)
-        self.password = getattr(modconf, 'password', None)
+        self.username = getattr(mod_conf, 'username', None)
+        self.password = getattr(mod_conf, 'password', None)
         
-        self.logs_collection = getattr(modconf, 'logs_collection', 'logs')
+        self.logs_collection = getattr(mod_conf, 'logs_collection', 'logs')
         logger.info('[mongo-logs] collection: %s', self.logs_collection)
         
-        self.hav_collection = getattr(modconf, 'hav_collection', 'logs')
+        self.hav_collection = getattr(mod_conf, 'hav_collection', 'logs')
         logger.info('[mongo-logs] hosts availability collection: %s', self.hav_collection)
         
-        self.mongodb_fsync = to_bool(getattr(modconf, 'mongodb_fsync', "True"))
+        self.mongodb_fsync = to_bool(getattr(mod_conf, 'mongodb_fsync', "True"))
         
-        max_logs_age = getattr(modconf, 'max_logs_age', '365')
+        max_logs_age = getattr(mod_conf, 'max_logs_age', '365')
         maxmatch = re.match(r'^(\d+)([dwmy]*)$', max_logs_age)
         if maxmatch is None:
             logger.error('[mongo-logs] Wrong format for max_logs_age. Must be <number>[d|w|m|y] or <number> and not %s' % max_logs_age)
@@ -143,9 +143,6 @@ class MongoLogs(BaseModule):
             elif maxmatch.group(2) == 'y':
                 self.max_logs_age = int(maxmatch.group(1)) * 365
         logger.info('[mongo-logs] max_logs_age: %s', self.max_logs_age)
-
-        self.max_records = int(getattr(modconf, 'max_records', '200'))
-        logger.info('[mongo-logs] max records: %s' % self.max_records)
 
         self.is_connected = DISCONNECTED
         self.backlog = []
