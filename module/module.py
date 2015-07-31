@@ -224,7 +224,49 @@ class MongoLogs(BaseModule):
             logger.info("[mongo-logs] Next log rotation at %s " % time.asctime(time.localtime(self.next_log_db_rotate)))
 
 
-    def manage_log_brok(self, b):
+    def manage_brok(self, brok):
+        """
+        Overloaded parent class manage_brok method: 
+        - do not manage the brokds when loaded in the WebUI
+        - select which broks management functions are to be called
+        """
+        if self.loaded_into == 'webui':
+            return
+            
+        start = time.clock()
+        
+        # Initial host state : may be interesting ?
+        # if brok.type == 'initial_host_status':
+            # host_name = brok.data['host_name']
+            # logger.debug("[mongo-logs] initial host status : %s", host_name)
+
+        # Initial service state : may be interesting ?
+        # if brok.type == 'initial_service_status':
+            # host_name = brok.data['host_name']
+            # service_description = brok.data['service_description']
+            # logger.debug("[mongo-logs] initial service status : %s/%s", host_name, service_description)
+
+        # Manage host check result 
+        if brok.type == 'host_check_result':
+            host_name = brok.data['host_name']
+            self.record_availability(host_name, '', brok)
+            logger.debug("[mongo-logs] host check result: %s, %.2gs", host_name, time.clock() - start)
+
+        # Manage service check result 
+        # if brok.type == 'service_check_result':
+            # host_name = brok.data['host_name']
+            # service_description = brok.data['service_description']
+            # service_id = host_name+"/"+service_description
+            # logger.debug("[mongo-logs] service check result: %s", service_id)
+            # self.record_availability(host_name, service_description, b)
+            # logger.debug("[mongo-logs] host check result: %s, %.2gs", host_name, time.clock() - start)
+
+        # Manage log brok
+        if brok.type == 'log':
+            self.record_log(brok)
+            # logger.debug("[mongo-logs] record log: %.2gs", time.clock() - start)
+            
+    def record_log(self, b):
         data = b.data
         line = data['log']
         if re.match("^\[[0-9]*\] [A-Z][a-z]*.:", line):
@@ -271,13 +313,6 @@ class MongoLogs(BaseModule):
         else:
             logger.info("[mongo-logs] This line is invalid: %s", line)
 
-    def manage_host_check_result_brok(self, b):
-        host_name = b.data['host_name']
-        logger.debug("[mongo-logs] host check result: %s is %s", host_name, b.data['state'])
-        start = time.time()
-        self.record_availability(host_name, '', b)
-        logger.debug("[mongo-logs] host check result: %s, %d seconds", host_name, time.time() - start)
-        
     ## Update hosts/services availability
     def record_availability(self, hostname, service, b):
         # Insert/update in shinken state table
