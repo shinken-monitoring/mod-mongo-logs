@@ -57,7 +57,7 @@ try:
     from pymongo import MongoClient
     from pymongo.errors import AutoReconnect
 except ImportError:
-    logger.error('[MongoDB Module] Can not import pymongo and/or MongoClient'
+    logger.error('[mongo-logs] Can not import pymongo and/or MongoClient'
                  'Your pymongo lib is too old. '
                  'Please install it with a 3.x+ version from '
                  'https://pypi.python.org/pypi/pymongo')
@@ -71,7 +71,7 @@ from shinken.util import to_bool
 properties = {
     'daemons': ['broker', 'webui'],
     'type': 'mongo-logs',
-    'external': False,
+    'external': True,
     'phases': ['running'],
     }
 
@@ -106,7 +106,7 @@ class MongoLogs(BaseModule):
         
         self.replica_set = getattr(modconf, 'replica_set', None)
         if self.replica_set and int(pymongo.version[0]) < 3:
-            logger.error('[MongoDB Module] Can not initialize module with '
+            logger.error('[mongo-logs] Can not initialize module with '
                          'replica_set because your pymongo lib is too old. '
                          'Please install it with a 3.x+ version from '
                          'https://pypi.python.org/pypi/pymongo')
@@ -195,6 +195,7 @@ class MongoLogs(BaseModule):
             raise MongoLogsError
 
     def close(self):
+        self.is_connected = DISCONNECTED
         self.conn.disconnect()
 
     def commit(self):
