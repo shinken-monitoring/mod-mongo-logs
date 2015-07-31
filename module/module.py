@@ -121,7 +121,7 @@ class MongoLogs(BaseModule):
         self.logs_collection = getattr(mod_conf, 'logs_collection', 'logs')
         logger.info('[mongo-logs] collection: %s', self.logs_collection)
         
-        self.hav_collection = getattr(mod_conf, 'hav_collection', 'logs')
+        self.hav_collection = getattr(mod_conf, 'hav_collection', 'availability')
         logger.info('[mongo-logs] hosts availability collection: %s', self.hav_collection)
         
         self.mongodb_fsync = to_bool(getattr(mod_conf, 'mongodb_fsync', "True"))
