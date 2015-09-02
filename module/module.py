@@ -190,6 +190,7 @@ class MongoLogs(BaseModule):
     def close(self):
         self.is_connected = DISCONNECTED
         self.conn.disconnect()
+        logger.info('[mongo-logs] database connection closed')
 
     def commit(self):
         pass
@@ -220,12 +221,8 @@ class MongoLogs(BaseModule):
     def manage_brok(self, brok):
         """
         Overloaded parent class manage_brok method:
-        - do not manage the brokds when loaded in the WebUI
         - select which broks management functions are to be called
         """
-        if self.loaded_into == 'webui':
-            return
-
         start = time.clock()
 
         # Initial host state : may be interesting ?
@@ -257,7 +254,7 @@ class MongoLogs(BaseModule):
         # Manage log brok
         if brok.type == 'log':
             self.record_log(brok)
-            # logger.debug("[mongo-logs] record log: %.2gs", time.clock() - start)
+            logger.debug("[mongo-logs] record log: %.2gs", time.clock() - start)
 
     def record_log(self, b):
         data = b.data
@@ -505,7 +502,7 @@ class MongoLogs(BaseModule):
         self.set_proctitle(self.name)
         self.set_exit_handler()
 
-        db_commit_next_time = time.time()
+        db_commit_next_time = time.clock()
 
         while not self.interrupted:
             logger.debug("[mongo-logs] queue length: %s", self.to_q.qsize())
