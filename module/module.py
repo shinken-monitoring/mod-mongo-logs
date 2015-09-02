@@ -1,5 +1,4 @@
 #!/usr/bin/python
-
 # -*- coding: utf-8 -*-
 
 # Copyright (C) 2009-2012:
@@ -7,6 +6,7 @@
 #    Gerhard Lausser, Gerhard.Lausser@consol.de
 #    Gregory Starck, g.starck@gmail.com
 #    Hartmut Goebel, h.goebel@goebel-consult.de
+#    Frederic Mohier, frederic.mohier@gmail.com
 #
 # This file is part of Shinken.
 #
@@ -83,10 +83,6 @@ def get_instance(plugin):
     return instance
 
 
-def row_factory(cursor, row):
-    """Handler for the sqlite fetch method."""
-    return Logline(cursor.description, row)
-
 CONNECTED = 1
 DISCONNECTED = 2
 SWITCHING = 3
@@ -103,7 +99,7 @@ class MongoLogs(BaseModule):
 
         self.uri = getattr(mod_conf, 'uri', 'mongodb://localhost')
         logger.info('[mongo-logs] mongo uri: %s', self.uri)
-        
+
         self.replica_set = getattr(mod_conf, 'replica_set', None)
         if self.replica_set and int(pymongo.version[0]) < 3:
             logger.error('[mongo-logs] Can not initialize module with '
@@ -114,18 +110,18 @@ class MongoLogs(BaseModule):
 
         self.database = getattr(mod_conf, 'database', 'shinken')
         logger.info('[mongo-logs] database: %s', self.database)
-        
+
         self.username = getattr(mod_conf, 'username', None)
         self.password = getattr(mod_conf, 'password', None)
-        
+
         self.logs_collection = getattr(mod_conf, 'logs_collection', 'logs')
         logger.info('[mongo-logs] collection: %s', self.logs_collection)
-        
+
         self.hav_collection = getattr(mod_conf, 'hav_collection', 'availability')
         logger.info('[mongo-logs] hosts availability collection: %s', self.hav_collection)
-        
+
         self.mongodb_fsync = to_bool(getattr(mod_conf, 'mongodb_fsync', "True"))
-        
+
         max_logs_age = getattr(mod_conf, 'max_logs_age', '365')
         maxmatch = re.match(r'^(\d+)([dwmy]*)$', max_logs_age)
         if maxmatch is None:
@@ -146,11 +142,11 @@ class MongoLogs(BaseModule):
 
         self.is_connected = DISCONNECTED
         self.backlog = []
-        
+
         # Now sleep one second, so that won't get lineno collisions with the last second
         time.sleep(1)
         self.lineno = 0
-        
+
         self.cache = {}
         self.cache_backlog = []
 
@@ -170,14 +166,14 @@ class MongoLogs(BaseModule):
 
             self.db = getattr(self.con, self.database)
             logger.info("[mongo-logs] connected to the database: %s", self.database)
-            
+
             if self.username and self.password:
                 self.db.authenticate(self.username, self.password)
                 logger.info("[mongo-logs] user authenticated: %s", self.username)
-                
+
             self.is_connected = CONNECTED
             self.next_log_db_rotate = time.time()
-            
+
             logger.info('[mongo-logs] database connection established')
         except AutoReconnect, exp:
             # now what, ha?
@@ -203,7 +199,7 @@ class MongoLogs(BaseModule):
         now = time.time()
         if self.next_log_db_rotate <= now:
             logger.info("[mongo-logs] rotating logs ...")
-            
+
             today = datetime.date.today()
             today0000 = datetime.datetime(today.year, today.month, today.day, 0, 0, 0)
             today0005 = datetime.datetime(today.year, today.month, today.day, 0, 5, 0)
@@ -223,15 +219,15 @@ class MongoLogs(BaseModule):
 
     def manage_brok(self, brok):
         """
-        Overloaded parent class manage_brok method: 
+        Overloaded parent class manage_brok method:
         - do not manage the brokds when loaded in the WebUI
         - select which broks management functions are to be called
         """
         if self.loaded_into == 'webui':
             return
-            
+
         start = time.clock()
-        
+
         # Initial host state : may be interesting ?
         # if brok.type == 'initial_host_status':
             # host_name = brok.data['host_name']
@@ -243,13 +239,13 @@ class MongoLogs(BaseModule):
             # service_description = brok.data['service_description']
             # logger.debug("[mongo-logs] initial service status : %s/%s", host_name, service_description)
 
-        # Manage host check result 
+        # Manage host check result
         if brok.type == 'host_check_result':
             host_name = brok.data['host_name']
             self.record_availability(host_name, '', brok)
             logger.debug("[mongo-logs] host check result: %s, %.2gs", host_name, time.clock() - start)
 
-        # Manage service check result 
+        # Manage service check result
         # if brok.type == 'service_check_result':
             # host_name = brok.data['host_name']
             # service_description = brok.data['service_description']
@@ -262,7 +258,7 @@ class MongoLogs(BaseModule):
         if brok.type == 'log':
             self.record_log(brok)
             # logger.debug("[mongo-logs] record log: %.2gs", time.clock() - start)
-            
+
     def record_log(self, b):
         data = b.data
         line = data['log']
@@ -270,7 +266,7 @@ class MongoLogs(BaseModule):
             # Match log which NOT have to be stored
             logger.warning('[mongo-logs] do not store: %s', line)
             return
-            
+
         logline = Logline(line=line)
         values = logline.as_dict()
         if logline.logclass != LOGCLASS_INVALID:
@@ -314,7 +310,7 @@ class MongoLogs(BaseModule):
     def record_availability(self, hostname, service, b):
         # Insert/update in shinken state table
         logger.debug("[mongo-logs] record availability: %s/%s: %s", hostname, service, b.data)
-            
+
         # Host check brok:
         # ----------------
         # {'last_time_unreachable': 0, 'last_problem_id': 1, 'check_type': 1, 'retry_interval': 1, 'last_event_id': 1, 'problem_has_been_acknowledged': False, 'last_state': 'DOWN', 'latency': 0, 'last_state_type': 'HARD', 'last_hard_state_change': 1433822140, 'last_time_up': 1433822140, 'percent_state_change': 0.0, 'state': 'UP', 'last_chk': 1433822138, 'last_state_id': 0, 'end_time': 0, 'timeout': 0, 'current_event_id': 1, 'execution_time': 0, 'start_time': 0, 'return_code': 0, 'state_type': 'HARD', 'output': '', 'in_checking': False, 'early_timeout': 0, 'in_scheduled_downtime': False, 'attempt': 1, 'state_type_id': 1, 'acknowledgement_type': 1, 'last_state_change': 1433822140.825969, 'last_time_down': 1433821584, 'instance_id': 0, 'long_output': '', 'current_problem_id': 0, 'host_name': 'sim-0003', 'check_interval': 60, 'state_id': 0, 'has_been_checked': 1, 'perf_data': u''}
@@ -325,7 +321,7 @@ class MongoLogs(BaseModule):
         # 'last_time_unreachable': 0 / 'last_time_up': 1433152221 / 'last_time_down': 0
         # 'last_chk': 1433152220 / 'last_state_change': 1431420780.184517
         # 'in_scheduled_downtime': False
-        
+
         # Service check brok:
         # -------------------
         # {'last_problem_id': 0, 'check_type': 0, 'retry_interval': 2, 'last_event_id': 0, 'problem_has_been_acknowledged': False, 'last_time_critical': 0, 'last_time_warning': 0, 'end_time': 0, 'last_state': 'OK', 'latency': 0.2347090244293213, 'last_time_unknown': 0, 'last_state_type': 'HARD', 'last_hard_state_change': 1433736035, 'percent_state_change': 0.0, 'state': 'OK', 'last_chk': 1433785101, 'last_state_id': 0, 'host_name': u'shinken24', 'has_been_checked': 1, 'check_interval': 5, 'current_event_id': 0, 'execution_time': 0.062339067459106445, 'start_time': 0, 'return_code': 0, 'state_type': 'HARD', 'output': 'Ok : memory consumption is 37%', 'service_description': u'Memory', 'in_checking': False, 'early_timeout': 0, 'in_scheduled_downtime': False, 'attempt': 1, 'state_type_id': 1, 'acknowledgement_type': 1, 'last_state_change': 1433736035.927526, 'instance_id': 0, 'long_output': u'', 'current_problem_id': 0, 'last_time_ok': 1433785103, 'timeout': 0, 'state_id': 0, 'perf_data': u'cached=13%;;;0%;100% buffered=1%;;;0%;100% consumed=37%;80%;90%;0%;100% used=53%;;;0%;100% free=46%;;;0%;100% swap_used=0%;;;0%;100% swap_free=100%;;;0%;100% buffered_abs=36076KB;;;0KB;2058684KB used_abs=1094544KB;;;0KB;2058684KB cached_abs=284628KB;;;0KB;2058684KB consumed_abs=773840KB;;;0KB;2058684KB free_abs=964140KB;;;0KB;2058684KB total_abs=2058684KB;;;0KB;2058684KB swap_total=392188KB;;;0KB;392188KB swap_used=0KB;;;0KB;392188KB swap_free=392188KB;;;0KB;392188KB'}
@@ -336,20 +332,20 @@ class MongoLogs(BaseModule):
         # 'last_time_critical': 0 / 'last_time_warning': 0 / 'last_time_unknown': 0 / 'last_time_ok': 1433785103
         # 'last_chk': 1433785101 / 'last_state_change': 1433736035.927526
         # 'in_scheduled_downtime': False
-        
+
         # Only for simulated hosts ...
         # if not hostname.startswith('kiosk-0001'):
             # return
-            
+
         # Only for host check at the moment ...
         if not service is '':
             return
-            
+
         # Ignoring SOFT states ...
         # if b.data['state_type_id']==0:
             # logger.warning("[mongo-logs] record availability for: %s/%s, but no HARD state, ignoring ...", hostname, service)
-        
-        
+
+
         midnight = datetime.datetime.combine(datetime.date.today(), datetime.time.min)
         midnight_timestamp = time.mktime (midnight.timetuple())
         # Number of seconds today ...
@@ -364,7 +360,7 @@ class MongoLogs(BaseModule):
         query = """%s/%s_%s""" % (hostname, service, day)
         q_day = { "hostname": hostname, "service": service, "day": day.strftime('%Y-%m-%d') }
         q_yesterday = { "hostname": hostname, "service": service, "day": yesterday.strftime('%Y-%m-%d') }
-        
+
         # Test if record for current day still exists
         exists = False
         try:
@@ -372,7 +368,7 @@ class MongoLogs(BaseModule):
             if '_id' in self.cache[query]:
                 exists = True
                 logger.debug("[mongo-logs] found a today record for: %s", query)
-                
+
                 # Test if yesterday record exists ...
                 # data_yesterday = self.db[self.hav_collection].find_one( q_yesterday )
                 # if '_id' in data_yesterday:
@@ -383,7 +379,7 @@ class MongoLogs(BaseModule):
         except Exception, exp:
             logger.error("[mongo-logs] Exception when querying database: %s", str(exp))
             # return
-        
+
         # Configure recorded data
         current_state = b.data['state']
         current_state_id = b.data['state_id']
@@ -392,7 +388,7 @@ class MongoLogs(BaseModule):
         last_check_timestamp = self.cache[query]['last_check_timestamp'] if exists else midnight_timestamp
         since_last_check = 0
         logger.debug("[mongo-logs] current state: %s, last state: %s", current_state, last_state)
-        
+
         # Host check
         if service=='':
             last_time_unreachable = b.data['last_time_unreachable']
@@ -401,13 +397,13 @@ class MongoLogs(BaseModule):
             last_state_change = b.data['last_state_change']
             last_check = b.data['last_chk']
             since_last_check = int(last_check - last_check_timestamp)
-            
+
             # if current_state == 'UP':
                 # since_last_check = int(last_check - last_check_timestamp)
-                    
+
             # elif current_state== 'UNREACHABLE':
                 # since_last_check = int(last_check - last_check_timestamp)
-                    
+
             # elif current_state == 'DOWN':
                 # since_last_check = int(last_check - last_check_timestamp)
 
@@ -420,7 +416,7 @@ class MongoLogs(BaseModule):
                 # logger.warning("[mongo-logs] last_time_ok: %d", b.data['last_time_ok'])
                 # logger.warning("[mongo-logs] last_time_warning: %d", b.data['last_time_warning'])
                 # logger.warning("[mongo-logs] last_time_critical: %d", b.data['last_time_critical'])
-        
+
         if exists:
             # Update existing record
             data = self.cache[query]
@@ -433,7 +429,7 @@ class MongoLogs(BaseModule):
             else:
                 # Increase current state duration with seconds since last state
                 data["daily_%d" % data['last_check_state']] += (since_last_check)
-            
+
         else:
             # Create record
             data = {}
@@ -442,18 +438,18 @@ class MongoLogs(BaseModule):
             data['day'] = day.strftime('%Y-%m-%d')
             data['day_ts'] = midnight_timestamp
             data['is_downtime'] = '1' if bool(b.data['in_scheduled_downtime']) else '0'
-            
+
             # All possible states are 0 seconds duration.
             data['daily_0'] = 0
             data['daily_1'] = 0
             data['daily_2'] = 0
             data['daily_3'] = 0
             data['daily_4'] = 0
-            
+
             # First check state and timestamp
             data['first_check_state'] = current_state_id
             data['first_check_timestamp'] = int(b.data['last_chk'])
-                
+
         # Update cache ...
         self.cache[query] = data
 
@@ -461,18 +457,18 @@ class MongoLogs(BaseModule):
         data['daily_4'] = 86400
         for value in [ data['daily_0'], data['daily_1'], data['daily_2'], data['daily_3'] ]:
             data['daily_4'] -= int(value)
-        
+
         # Last check state and timestamp
         data['last_check_state'] = current_state_id
         data['last_check_timestamp'] = int(b.data['last_chk'])
-        
+
         self.cache[query] = data
-            
+
         # Store cached values ...
         try:
             logger.debug("[mongo-logs] store for: %s", self.cache[query])
             self.db[self.hav_collection].save(self.cache[query])
-                
+
             self.is_connected = CONNECTED
             # If we have a backlog from an outage, we flush these lines
             # First we make a copy, so we can delete elements from
@@ -499,7 +495,7 @@ class MongoLogs(BaseModule):
             # After 5 seconds we either have a successful write
             # or another exception which means, we are disconnected
             self.cache_backlog.append(self.cache[query])
-            
+
         except Exception, exp:
             self.is_connected = DISCONNECTED
             logger.error("[mongo-logs] Database error occurred: %s", exp)
@@ -508,7 +504,7 @@ class MongoLogs(BaseModule):
     def main(self):
         self.set_proctitle(self.name)
         self.set_exit_handler()
-        
+
         db_commit_next_time = time.time()
 
         while not self.interrupted:
