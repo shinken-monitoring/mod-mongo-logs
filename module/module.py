@@ -189,7 +189,7 @@ class MongoLogs(BaseModule):
 
     def close(self):
         self.is_connected = DISCONNECTED
-        self.conn.disconnect()
+        self.con.close()
         logger.info('[mongo-logs] database connection closed')
 
     def commit(self):
