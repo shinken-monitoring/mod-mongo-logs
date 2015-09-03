@@ -68,6 +68,8 @@ from shinken.objects.module import Module
 from shinken.log import logger
 from shinken.util import to_bool
 
+from collections import deque
+
 properties = {
     'daemons': ['broker', 'webui'],
     'type': 'mongo-logs',
@@ -114,8 +116,17 @@ class MongoLogs(BaseModule):
         self.username = getattr(mod_conf, 'username', None)
         self.password = getattr(mod_conf, 'password', None)
 
+        self.commit_period = int(getattr(mod_conf, 'commit_period', '10'))
+        logger.info('[mongo-logs] periodical commit period: %ds', self.commit_period)
+
+        self.commit_volume = int(getattr(mod_conf, 'commit_volume', '1000'))
+        logger.info('[mongo-logs] periodical commit volume: %d lines', self.commit_volume)
+
+        self.db_test_period = int(getattr(mod_conf, 'db_test_period', '0'))
+        logger.info('[mongo-logs] periodical DB connection test period: %ds', self.db_test_period)
+
         self.logs_collection = getattr(mod_conf, 'logs_collection', 'logs')
-        logger.info('[mongo-logs] collection: %s', self.logs_collection)
+        logger.info('[mongo-logs] logs collection: %s', self.logs_collection)
 
         self.hav_collection = getattr(mod_conf, 'hav_collection', 'availability')
         logger.info('[mongo-logs] hosts availability collection: %s', self.hav_collection)
@@ -124,7 +135,7 @@ class MongoLogs(BaseModule):
 
         max_logs_age = getattr(mod_conf, 'max_logs_age', '365')
         maxmatch = re.match(r'^(\d+)([dwmy]*)$', max_logs_age)
-        if maxmatch is None:
+        if not maxmatch:
             logger.error('[mongo-logs] Wrong format for max_logs_age. Must be <number>[d|w|m|y] or <number> and not %s' % max_logs_age)
             return None
         else:
@@ -147,8 +158,10 @@ class MongoLogs(BaseModule):
         time.sleep(1)
         self.lineno = 0
 
-        self.cache = {}
-        self.cache_backlog = []
+        self.logs_cache = deque()
+
+        self.availability_cache = {}
+        self.availability_cache_backlog = []
 
     def load(self, app):
         self.app = app
@@ -215,7 +228,47 @@ class MongoLogs(BaseModule):
 
             # See you tomorrow
             self.next_log_db_rotate = time.mktime(nextrotation.timetuple())
-            logger.info("[mongo-logs] Next log rotation at %s " % time.asctime(time.localtime(self.next_log_db_rotate)))
+            logger.info("[mongo-logs] next log rotation at %s " % time.asctime(time.localtime(self.next_log_db_rotate)))
+            
+        logger.info("[mongo-logs] commiting ...")
+        
+        if self.logs_cache:
+            logger.info("[mongo-logs] %d lines to insert in database (max insertion is %d lines)", len(self.logs_cache), self.commit_volume)
+
+            # Flush all the stored log lines
+            lines_flushed = 1
+            now = time.time()
+            some_lines = []
+            while True:
+                try:
+                    # result = self.db[self.logs_collection].insert_one(self.logs_cache.popleft())
+                    some_lines.append(self.logs_cache.popleft())
+                    lines_flushed = lines_flushed + 1
+                    if lines_flushed >= self.commit_volume:
+                        break
+                except IndexError:
+                    logger.info("[mongo-logs] Stored all logs queue in the database")
+                    break
+                except AutoReconnect, exp:
+                    logger.error("[mongo-logs] Autoreconnect exception when inserting lines: %s", str(exp))
+                    self.is_connected = SWITCHING
+                    # Abort commit ... will be finished next time!
+                except Exception, exp:
+                    self.close()
+                    logger.error("[mongo-logs] Database error occurred: %s", exp)
+            logger.info("[mongo-logs] time to filter %s lines (%2.4f)", lines_flushed, time.time() - now)
+            
+            now = time.time()
+            try:
+                result = self.db[self.logs_collection].insert_many(some_lines)
+            except AutoReconnect, exp:
+                logger.error("[mongo-logs] Autoreconnect exception when inserting lines: %s", str(exp))
+                self.is_connected = SWITCHING
+                # Abort commit ... will be finished next time!
+            except Exception, exp:
+                self.close()
+                logger.error("[mongo-logs] Database error occurred: %s", exp)
+            logger.info("[mongo-logs] time to insert %s lines (%2.4f)", lines_flushed, time.time() - now)
 
 
     def manage_brok(self, brok):
@@ -268,40 +321,11 @@ class MongoLogs(BaseModule):
         values = logline.as_dict()
         if logline.logclass != LOGCLASS_INVALID:
             logger.debug('[mongo-logs] store log line values: %s', values)
-            try:
-                self.db[self.logs_collection].insert(values)
-                self.is_connected = CONNECTED
-                # If we have a backlog from an outage, we flush these lines
-                # First we make a copy, so we can delete elements from
-                # the original self.backlog
-                backloglines = [bl for bl in self.backlog]
-                for backlogline in backloglines:
-                    try:
-                        self.db[self.logs_collection].insert(backlogline)
-                        self.backlog.remove(backlogline)
-                    except AutoReconnect, exp:
-                        self.is_connected = SWITCHING
-                    except Exception, exp:
-                        logger.error("[mongo-logs] Got an exception inserting the backlog: %s", str(exp))
-            except AutoReconnect, exp:
-                if self.is_connected != SWITCHING:
-                    self.is_connected = SWITCHING
-                    time.sleep(5)
-                    # Under normal circumstances after these 5 seconds
-                    # we should have a new primary node
-                else:
-                    # Not yet? Wait, but try harder.
-                    time.sleep(0.1)
-                # At this point we must save the logline for a later attempt
-                # After 5 seconds we either have a successful write
-                # or another exception which means, we are disconnected
-                self.backlog.append(values)
-            except Exception, exp:
-                self.is_connected = DISCONNECTED
-                logger.error("[mongo-logs] Database error occurred: %s", exp)
-                raise MongoLogsError
+            self.logs_cache.append(values)
         else:
             logger.info("[mongo-logs] This line is invalid: %s", line)
+
+        return 
 
     ## Update hosts/services availability
     def record_availability(self, hostname, service, b):
@@ -361,8 +385,8 @@ class MongoLogs(BaseModule):
         # Test if record for current day still exists
         exists = False
         try:
-            self.cache[query] = self.db[self.hav_collection].find_one( q_day )
-            if '_id' in self.cache[query]:
+            self.availability_cache[query] = self.db[self.hav_collection].find_one( q_day )
+            if '_id' in self.availability_cache[query]:
                 exists = True
                 logger.debug("[mongo-logs] found a today record for: %s", query)
 
@@ -381,8 +405,8 @@ class MongoLogs(BaseModule):
         current_state = b.data['state']
         current_state_id = b.data['state_id']
         last_state = b.data['last_state']
-        last_check_state = self.cache[query]['last_check_state'] if exists else 3
-        last_check_timestamp = self.cache[query]['last_check_timestamp'] if exists else midnight_timestamp
+        last_check_state = self.availability_cache[query]['last_check_state'] if exists else 3
+        last_check_timestamp = self.availability_cache[query]['last_check_timestamp'] if exists else midnight_timestamp
         since_last_check = 0
         logger.debug("[mongo-logs] current state: %s, last state: %s", current_state, last_state)
 
@@ -416,7 +440,7 @@ class MongoLogs(BaseModule):
 
         if exists:
             # Update existing record
-            data = self.cache[query]
+            data = self.availability_cache[query]
 
             # Update record
             if since_last_check > seconds_today:
@@ -448,7 +472,7 @@ class MongoLogs(BaseModule):
             data['first_check_timestamp'] = int(b.data['last_chk'])
 
         # Update cache ...
-        self.cache[query] = data
+        self.availability_cache[query] = data
 
         # Unchecked state for all day duration minus all states duration
         data['daily_4'] = 86400
@@ -459,22 +483,22 @@ class MongoLogs(BaseModule):
         data['last_check_state'] = current_state_id
         data['last_check_timestamp'] = int(b.data['last_chk'])
 
-        self.cache[query] = data
+        self.availability_cache[query] = data
 
         # Store cached values ...
         try:
-            logger.debug("[mongo-logs] store for: %s", self.cache[query])
-            self.db[self.hav_collection].save(self.cache[query])
+            logger.debug("[mongo-logs] store for: %s", self.availability_cache[query])
+            self.db[self.hav_collection].save(self.availability_cache[query])
 
             self.is_connected = CONNECTED
             # If we have a backlog from an outage, we flush these lines
             # First we make a copy, so we can delete elements from
             # the original cache backlog
-            backloglines = [bl for bl in self.cache_backlog]
+            backloglines = [bl for bl in self.availability_cache_backlog]
             for backlogline in backloglines:
                 try:
                     self.db[self.hav_collection].insert(backlogline)
-                    self.cache_backlog.remove(backlogline)
+                    self.availability_cache_backlog.remove(backlogline)
                 except AutoReconnect, exp:
                     self.is_connected = SWITCHING
                 except Exception, exp:
@@ -491,7 +515,7 @@ class MongoLogs(BaseModule):
             # At this point we must save the logline for a later attempt
             # After 5 seconds we either have a successful write
             # or another exception which means, we are disconnected
-            self.cache_backlog.append(self.cache[query])
+            self.availability_cache_backlog.append(self.availability_cache[query])
 
         except Exception, exp:
             self.is_connected = DISCONNECTED
@@ -502,20 +526,32 @@ class MongoLogs(BaseModule):
         self.set_proctitle(self.name)
         self.set_exit_handler()
 
-        db_commit_next_time = time.clock()
+        db_commit_next_time = time.time()
+        db_test_connection = time.time()
 
         while not self.interrupted:
             logger.debug("[mongo-logs] queue length: %s", self.to_q.qsize())
-            now = time.clock()
+            now = time.time()
+
+            if self.db_test_period and db_test_connection < now:
+                logger.info("[mongo-logs] Testing database connection ...")
+                # Test connection every 5 seconds ...
+                db_test_connection = now + self.db_test_period
+                if self.is_connected == DISCONNECTED:
+                    logger.warning("[mongo-logs] Trying to connect database ...")
+                    self.open()
+                logger.debug("[mongo-logs] Next connection test time ...")
 
             if db_commit_next_time < now:
+                logger.debug("[mongo-logs] Commit time ...")
                 # Commit every 5 seconds ...
-                db_commit_next_time = now + 5
+                db_commit_next_time = now + self.commit_period
                 self.commit_and_rotate_log_db()
+                logger.debug("[mongo-logs] Next commit time ...")
 
             l = self.to_q.get()
             for b in l:
                 b.prepare()
                 self.manage_brok(b)
 
-            logger.debug("[mongo-logs] time to manage %s broks (%.2gs)", len(l), time.clock() - now)
+            logger.debug("[mongo-logs] time to manage %s broks (%3.4fs)", len(l), time.time() - now)
