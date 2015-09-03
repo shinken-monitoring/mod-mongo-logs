@@ -237,31 +237,3 @@ class Logline(dict):
 
     def __str__(self):
         return "line: %s" % self.message
-
-
-    def fill(self, datamgr):
-        """Attach host and/or service objects to a Logline object
-
-        Lines describing host or service events only contain host_name
-        and/or service_description. This method finds the corresponding
-        objects and adds them to the line as attributes log_host
-        and/or log_service
-
-        """
-        if hasattr(self, 'logobject') and self.logobject == LOGOBJECT_HOST:
-            try:
-                setattr(self, 'log_host', datamgr.get_host(self.host_name))
-            except Exception, e:
-                logger.error("[Livestatus Log Lines] Error on host: %s" % e)
-                pass
-        elif hasattr(self, 'logobject') and self.logobject == LOGOBJECT_SERVICE:
-            try:
-                setattr(self, 'log_host', datamgr.get_host(self.host_name))
-                setattr(self, 'log_service', datamgr.get_service(self.host_name, self.service_description))
-            except Exception, e:
-                logger.error("[Livestatus Log Lines] Error on service: %s" % e)
-                pass
-        else:
-            setattr(self, 'log_host', None)
-            setattr(self, 'log_service', None)
-        return self
