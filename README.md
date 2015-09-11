@@ -11,8 +11,54 @@ This module is a must-have for some Shinken Web UI features: host/service histor
 **Please note that this module is still on tests ... and do not hesitate to report any issue!**
 
 
-Doc (in progress ...)
-========================
+# Doc (in progress ...)
+
+
+Database collection *logs*
+
+Logs are stored in a collection which default name is *logs*
+
+Each document in the collection contain always the same fields wichever is the stored log line: 
+
+- _id: added by mongodb when document is inserted
+
+- type: 
+    -   INFO, DEBUG, WARNING, ERROR for specific Shinken logs, or
+    -   NAGIOS log type (eg. SERVICE ALERT, PASSIVE HOST CHECK, ...)
+
+- logobject: monitoring object concerned by the log line
+```
+    LOGOBJECT_INFO = 0
+    LOGOBJECT_HOST = 1
+    LOGOBJECT_SERVICE = 2
+    LOGOBJECT_CONTACT = 3
+```
+
+- logclass: 
+```
+    LOGCLASS_INFO = 0          # all messages not in any other class
+    LOGCLASS_ALERT = 1         # alerts: the change service/host state
+    LOGCLASS_PROGRAM = 2       # important program events (restart, ...)
+    LOGCLASS_NOTIFICATION = 3  # host/service notifications
+    LOGCLASS_PASSIVECHECK = 4  # passive checks
+    LOGCLASS_COMMAND = 5       # external commands
+    LOGCLASS_STATE = 6         # initial or current states
+```
+- time: log line UTC timestamp
+- message: complete log line message
+
+The following fields are always present but their value are completed depending upon the message logclass value: 
+- comment 
+- plugin_output
+- attempt
+- options 
+- state_type 
+- state 
+- host_name 
+- service_description 
+- contact_name 
+- command_name 
+
 Logs stored in the mongodb collection (example): 
 ```
     { "_id" : "shinken-test", "last_test" : 1441968270.48028 } ,
