@@ -97,6 +97,14 @@ class MongoLogsError(Exception):
 class MongoLogs(BaseModule):
 
     def __init__(self, mod_conf):
+        try:
+            import pymongo
+        except ImportError:
+            logger.error('[WebUI-mongo-logs] Can not import pymongo'
+                         'Please install it with a 3.x+ version from '
+                         'https://pypi.python.org/pypi/pymongo')
+            raise
+
         BaseModule.__init__(self, mod_conf)
 
         self.uri = getattr(mod_conf, 'uri', 'mongodb://localhost')
@@ -111,10 +119,9 @@ class MongoLogs(BaseModule):
             return None
 
         self.database = getattr(mod_conf, 'database', 'shinken')
-        logger.info('[mongo-logs] database: %s', self.database)
-
         self.username = getattr(mod_conf, 'username', None)
         self.password = getattr(mod_conf, 'password', None)
+        logger.info('[mongo-logs] database: %s, username: %s', self.database, self.username)
 
         self.commit_period = int(getattr(mod_conf, 'commit_period', '10'))
         logger.info('[mongo-logs] periodical commit period: %ds', self.commit_period)
@@ -151,12 +158,50 @@ class MongoLogs(BaseModule):
                 self.max_logs_age = int(maxmatch.group(1)) * 365
         logger.info('[mongo-logs] max_logs_age: %s', self.max_logs_age)
 
-        self.is_connected = DISCONNECTED
-        self.backlog = []
+        self.services_cache = {}
+        services_filter = getattr(mod_conf, 'services_filter', '')
+        logger.info('[mongo-logs] services filtering: %s', services_filter)
+        
+        self.filter_service_description = None
+        self.filter_service_criticality = None
+        if services_filter: 
+            # Decode services filter
+            services_filter = [s for s in services_filter.split(',')]
+            for rule in services_filter:
+                rule = rule.strip()
+                if not rule:
+                    continue
+                logger.info('[mongo-logs] services filtering rule: %s', rule)
+                elts = rule.split(':', 1)
 
-        # Now sleep one second, so that won't get lineno collisions with the last second
-        time.sleep(1)
-        self.lineno = 0
+                t = 'service_description'
+                if len(elts) > 1:
+                    t = elts[0].lower()
+                    s = elts[1].lower()
+                
+                if t == 'service_description':
+                    self.filter_service_description = rule
+                    logger.info('[mongo-logs] services will be filtered by description: %s', self.filter_service_description)
+
+                if t == 'bp' or t == 'bi':
+                    self.filter_service_criticality = s
+                    logger.info('[mongo-logs] services will be filtered by criticality: %s', self.filter_service_criticality)
+                    
+
+        # Elasticsearch configuration part ... prepare next version !
+        # self.elasticsearch_uri = getattr(mod_conf, 'elasticsearch_uri', None)
+        # if self.elasticsearch_uri:
+            # try:
+                # import rawes
+                # from rawes.elastic_exception import ElasticException
+            # except ImportError:
+                # logger.error('[mongo-logs] Can not import rawes library. Data will not be sent to your configured ElasticSearch: %s', self.elasticsearch_uri)
+                # self.elasticsearch_uri = None
+            # else:
+                # logger.info('[mongo-logs] data will be sent to ElasticSearch: %s', self.elasticsearch_uri)
+
+
+        self.is_connected = DISCONNECTED
 
         self.logs_cache = deque()
 
@@ -170,6 +215,12 @@ class MongoLogs(BaseModule):
         self.open()
 
     def open(self):
+        try:
+            from pymongo import MongoClient
+        except ImportError:
+            logger.error('[WebUI-mongo-logs] Can not import pymongo.MongoClient')
+            raise
+
         try:
             if self.replica_set:
                 self.con = MongoClient(self.uri, replicaSet=self.replica_set, fsync=self.mongodb_fsync)
@@ -185,7 +236,7 @@ class MongoLogs(BaseModule):
                 logger.info("[mongo-logs] user authenticated: %s", self.username)
 
             self.is_connected = CONNECTED
-            self.next_log_db_rotate = time.time()
+            self.next_logs_rotation = time.time()
 
             logger.info('[mongo-logs] database connection established')
         except AutoReconnect, exp:
@@ -208,67 +259,71 @@ class MongoLogs(BaseModule):
     def commit(self):
         pass
 
-    def commit_and_rotate_log_db(self):
-        """For a MongoDB there is no rotate, but we will delete old contents."""
+    def rotate_logs(self):
+        """
+        For a Mongo DB there is no rotate, but we will delete logs older than configured maximum age.
+        """
+        logger.info("[mongo-logs] rotating logs ...")
+
         now = time.time()
-        if self.next_log_db_rotate <= now:
-            logger.info("[mongo-logs] rotating logs ...")
+        today = datetime.date.today()
+        today0000 = datetime.datetime(today.year, today.month, today.day, 0, 0, 0)
+        today0005 = datetime.datetime(today.year, today.month, today.day, 0, 5, 0)
+        oldest = today0000 - datetime.timedelta(days=self.max_logs_age)
+        result = self.db[self.logs_collection].delete_many({u'time': {'$lt': time.mktime(oldest.timetuple())}})
+        logger.info("[mongo-logs] removed %d logs older than %s days.", result.deleted_count, self.max_logs_age)
 
-            today = datetime.date.today()
-            today0000 = datetime.datetime(today.year, today.month, today.day, 0, 0, 0)
-            today0005 = datetime.datetime(today.year, today.month, today.day, 0, 5, 0)
-            oldest = today0000 - datetime.timedelta(days=self.max_logs_age)
-            self.db[self.logs_collection].remove({u'time': {'$lt': time.mktime(oldest.timetuple())}})
-            logger.info("[mongo-logs] removed logs older than %s days.", self.max_logs_age)
+        if now < time.mktime(today0005.timetuple()):
+            nextrotation = today0005
+        else:
+            nextrotation = today0005 + datetime.timedelta(days=1)
 
-            if now < time.mktime(today0005.timetuple()):
-                nextrotation = today0005
-            else:
-                nextrotation = today0005 + datetime.timedelta(days=1)
+        # See you tomorrow
+        self.next_logs_rotation = time.mktime(nextrotation.timetuple())
+        logger.info("[mongo-logs] next log rotation at %s " % time.asctime(time.localtime(self.next_logs_rotation)))
 
-            # See you tomorrow
-            self.next_log_db_rotate = time.mktime(nextrotation.timetuple())
-            logger.info("[mongo-logs] next log rotation at %s " % time.asctime(time.localtime(self.next_log_db_rotate)))
-            
-        logger.info("[mongo-logs] commiting ...")
+
+    def commit_logs(self):
+        """
+        Peridically called (commit_period), this method prepares a bunch of queued logs (commit_colume) to insert them in the DB
+        """
+        if not self.logs_cache:
+            return
         
-        if self.logs_cache:
-            logger.info("[mongo-logs] %d lines to insert in database (max insertion is %d lines)", len(self.logs_cache), self.commit_volume)
+        logger.debug("[mongo-logs] commiting ...")
 
-            # Flush all the stored log lines
-            lines_flushed = 1
-            now = time.time()
-            some_lines = []
-            while True:
-                try:
-                    # result = self.db[self.logs_collection].insert_one(self.logs_cache.popleft())
-                    some_lines.append(self.logs_cache.popleft())
-                    lines_flushed = lines_flushed + 1
-                    if lines_flushed >= self.commit_volume:
-                        break
-                except IndexError:
-                    logger.info("[mongo-logs] Stored all logs queue in the database")
-                    break
-                except AutoReconnect, exp:
-                    logger.error("[mongo-logs] Autoreconnect exception when inserting lines: %s", str(exp))
-                    self.is_connected = SWITCHING
-                    # Abort commit ... will be finished next time!
-                except Exception, exp:
-                    self.close()
-                    logger.error("[mongo-logs] Database error occurred: %s", exp)
-            logger.info("[mongo-logs] time to filter %s lines (%2.4f)", lines_flushed, time.time() - now)
-            
-            now = time.time()
+        logger.debug("[mongo-logs] %d lines to insert in database (max insertion is %d lines)", len(self.logs_cache), self.commit_volume)
+
+        # Flush all the stored log lines
+        logs_to_commit = 1
+        now = time.time()
+        some_logs = []
+        while True:
             try:
-                result = self.db[self.logs_collection].insert_many(some_lines)
-            except AutoReconnect, exp:
-                logger.error("[mongo-logs] Autoreconnect exception when inserting lines: %s", str(exp))
-                self.is_connected = SWITCHING
-                # Abort commit ... will be finished next time!
+                # result = self.db[self.logs_collection].insert_one(self.logs_cache.popleft())
+                some_logs.append(self.logs_cache.popleft())
+                logs_to_commit = logs_to_commit + 1
+                if logs_to_commit >= self.commit_volume:
+                    break
+            except IndexError:
+                logger.debug("[mongo-logs] prepared all available logs for commit")
+                break
             except Exception, exp:
-                self.close()
-                logger.error("[mongo-logs] Database error occurred: %s", exp)
-            logger.info("[mongo-logs] time to insert %s lines (%2.4f)", lines_flushed, time.time() - now)
+                logger.error("[mongo-logs] exception: %s", str(exp))
+        logger.debug("[mongo-logs] time to prepare %s logs for commit (%2.4f)", logs_to_commit, time.time() - now)
+
+        now = time.time()
+        try:
+            result = self.db[self.logs_collection].insert_many(some_logs)
+            logger.debug("[mongo-logs] inserted %d logs.", len(result.inserted_ids))
+        except AutoReconnect, exp:
+            logger.error("[mongo-logs] Autoreconnect exception when inserting lines: %s", str(exp))
+            self.is_connected = SWITCHING
+            # Abort commit ... will be finished next time!
+        except Exception, exp:
+            self.close()
+            logger.error("[mongo-logs] Database error occurred when commiting: %s", exp)
+        logger.debug("[mongo-logs] time to insert %s logs (%2.4f)", logs_to_commit, time.time() - now)
 
 
     def manage_brok(self, brok):
@@ -279,30 +334,112 @@ class MongoLogs(BaseModule):
         start = time.clock()
 
         # Initial host state : may be interesting ?
-        # if brok.type == 'initial_host_status':
-            # host_name = brok.data['host_name']
-            # logger.debug("[mongo-logs] initial host status : %s", host_name)
+        if brok.type == 'initial_host_status':
+            host_name = brok.data['host_name']
+            service_description = ''
+            service_id = host_name+"/"+service_description
+            logger.debug("[mongo-logs] initial host status received: %s (bi=%d)", host_name, int (brok.data["business_impact"]))
 
+            self.services_cache[service_id] = { "hostname": host_name, "service": service_description }
+            logger.info("[mongo-logs] host registered: %s (bi=%d)", service_id, brok.data["business_impact"])
+            
+            #
+            # Do not check filters for an host ... always store availability
+            # 
+            # Filter service if needed: reference service in services cache ...
+            # ... if description filter matches ...
+            # if self.filter_service_description:
+                # logger.debug("[mongo-logs] service description filter testing ...")
+                # pat = re.compile(self.filter_service_description, re.IGNORECASE)
+                # if pat.search(service_id):
+                    # self.services_cache[service_id] = { "hostname": host_name, "service": service_description }
+                    # logger.info("[mongo-logs] service description filter matches for: %s (bi=%d)", service_id, brok.data["business_impact"])
+            
+            # ... or if criticality filter matches.
+            # if self.filter_service_criticality:
+                # logger.debug("[mongo-logs] service criticality filter testing ...")
+                # include = False
+                # bi = int (brok.data["business_impact"])
+                # if self.filter_service_criticality.startswith('>='):
+                    # if bi >= int(self.filter_service_criticality[2:]):
+                        # include = True
+                # elif self.filter_service_criticality.startswith('<='):
+                    # if bi <= int(self.filter_service_criticality[2:]):
+                        # include = True
+                # elif self.filter_service_criticality.startswith('>'):
+                    # if bi > int(self.filter_service_criticality[1:]):
+                        # include = True
+                # elif self.filter_service_criticality.startswith('<'):
+                    # if bi < int(self.filter_service_criticality[1:]):
+                        # include = True
+                # elif self.filter_service_criticality.startswith('='):
+                    # if bi == int(self.filter_service_criticality[1:]):
+                        # include = True
+                # if include:
+                    # self.services_cache[service_id] = { "hostname": host_name, "service": service_description }
+                    # logger.info("[mongo-logs] criticality filter matches for: %s (bi=%d)", service_id, brok.data["business_impact"])
+                    
+                    
         # Initial service state : may be interesting ?
-        # if brok.type == 'initial_service_status':
-            # host_name = brok.data['host_name']
-            # service_description = brok.data['service_description']
-            # logger.debug("[mongo-logs] initial service status : %s/%s", host_name, service_description)
+        if brok.type == 'initial_service_status':
+            host_name = brok.data['host_name']
+            service_description = brok.data['service_description']
+            service_id = host_name+"/"+service_description
+            logger.debug("[mongo-logs] initial service status received: %s (bi=%d)", host_name, int (brok.data["business_impact"]))
 
+            # Filter service if needed: reference service in services cache ...
+            # ... if description filter matches ...
+            if self.filter_service_description:
+                pat = re.compile(self.filter_service_description, re.IGNORECASE)
+                if pat.search(service_id):
+                    self.services_cache[service_id] = { "hostname": host_name, "service": service_description }
+                    logger.info("[mongo-logs] service description filter matches for: %s (bi=%d)", service_id, brok.data["business_impact"])
+            
+            # ... or if criticality filter matches.
+            if self.filter_service_criticality:
+                include = False
+                bi = int (brok.data["business_impact"])
+                if self.filter_service_criticality.startswith('>='):
+                    if bi >= int(self.filter_service_criticality[2:]):
+                        include = True
+                elif self.filter_service_criticality.startswith('<='):
+                    if bi <= int(self.filter_service_criticality[2:]):
+                        include = True
+                elif self.filter_service_criticality.startswith('>'):
+                    if bi > int(self.filter_service_criticality[1:]):
+                        include = True
+                elif self.filter_service_criticality.startswith('<'):
+                    if bi < int(self.filter_service_criticality[1:]):
+                        include = True
+                elif self.filter_service_criticality.startswith('='):
+                    if bi == int(self.filter_service_criticality[1:]):
+                        include = True
+                if include:
+                    self.services_cache[service_id] = { "hostname": host_name, "service": service_description }
+                    logger.info("[mongo-logs] criticality filter matches for: %s (bi=%d)", service_id, brok.data["business_impact"])
+        
         # Manage host check result
         if brok.type == 'host_check_result':
             host_name = brok.data['host_name']
-            self.record_availability(host_name, '', brok)
-            logger.debug("[mongo-logs] host check result: %s, %.2gs", host_name, time.clock() - start)
+            service_description = ''
+            service_id = host_name+"/"+service_description
+            logger.debug("[mongo-logs] host check result received: %s", host_name)
+            
+            if self.services_cache and service_id in self.services_cache:
+                # logger.info("[mongo-logs] services_cache: %s", service_id, brok.data["business_impact"])
+                self.record_availability(host_name, '', brok)
+                logger.debug("[mongo-logs] host check result: %s, %.2gs", host_name, time.clock() - start)
 
         # Manage service check result
-        # if brok.type == 'service_check_result':
-            # host_name = brok.data['host_name']
-            # service_description = brok.data['service_description']
-            # service_id = host_name+"/"+service_description
-            # logger.debug("[mongo-logs] service check result: %s", service_id)
-            # self.record_availability(host_name, service_description, b)
-            # logger.debug("[mongo-logs] host check result: %s, %.2gs", host_name, time.clock() - start)
+        if brok.type == 'service_check_result':
+            host_name = brok.data['host_name']
+            service_description = brok.data['service_description']
+            service_id = host_name+"/"+service_description
+            logger.debug("[mongo-logs] service check result received: %s", service_id)
+
+            if self.services_cache and service_id in self.services_cache:
+                self.record_availability(host_name, service_description, brok)
+                logger.debug("[mongo-logs] host check result: %s, %.2gs", host_name, time.clock() - start)
 
         # Manage log brok
         if brok.type == 'log':
@@ -310,6 +447,9 @@ class MongoLogs(BaseModule):
             logger.debug("[mongo-logs] record log: %.2gs", time.clock() - start)
 
     def record_log(self, b):
+        """
+        Parse a Shinken log brok to enqueue a log line for DB insertion
+        """
         data = b.data
         line = data['log']
         if re.match("^\[[0-9]*\] [A-Z][a-z]*.:", line):
@@ -325,51 +465,54 @@ class MongoLogs(BaseModule):
         else:
             logger.info("[mongo-logs] This line is invalid: %s", line)
 
-        return 
+        return
 
     ## Update hosts/services availability
     def record_availability(self, hostname, service, b):
-        # Insert/update in shinken state table
+        """
+        Parse a Shinken check brok to compute availability and store a daily availability record in the DB
+        
+        Main principles:
+        
+        Host check brok:
+        ----------------
+        {'last_time_unreachable': 0, 'last_problem_id': 1, 'check_type': 1, 'retry_interval': 1, 'last_event_id': 1, 'problem_has_been_acknowledged': False, 'last_state': 'DOWN', 'latency': 0, 'last_state_type': 'HARD', 'last_hard_state_change': 1433822140, 'last_time_up': 1433822140, 'percent_state_change': 0.0, 'state': 'UP', 'last_chk': 1433822138, 'last_state_id': 0, 'end_time': 0, 'timeout': 0, 'current_event_id': 1, 'execution_time': 0, 'start_time': 0, 'return_code': 0, 'state_type': 'HARD', 'output': '', 'in_checking': False, 'early_timeout': 0, 'in_scheduled_downtime': False, 'attempt': 1, 'state_type_id': 1, 'acknowledgement_type': 1, 'last_state_change': 1433822140.825969, 'last_time_down': 1433821584, 'instance_id': 0, 'long_output': '', 'current_problem_id': 0, 'host_name': 'sim-0003', 'check_interval': 60, 'state_id': 0, 'has_been_checked': 1, 'perf_data': u''}
+        
+        Interesting information ...
+        'state_id': 0 / 'state': 'UP' / 'state_type': 'HARD'
+        'last_state_id': 0 / 'last_state': 'UP' / 'last_state_type': 'HARD'
+        'last_time_unreachable': 0 / 'last_time_up': 1433152221 / 'last_time_down': 0
+        'last_chk': 1433152220 / 'last_state_change': 1431420780.184517
+        'in_scheduled_downtime': False
+
+        Service check brok:
+        -------------------
+        {'last_problem_id': 0, 'check_type': 0, 'retry_interval': 2, 'last_event_id': 0, 'problem_has_been_acknowledged': False, 'last_time_critical': 0, 'last_time_warning': 0, 'end_time': 0, 'last_state': 'OK', 'latency': 0.2347090244293213, 'last_time_unknown': 0, 'last_state_type': 'HARD', 'last_hard_state_change': 1433736035, 'percent_state_change': 0.0, 'state': 'OK', 'last_chk': 1433785101, 'last_state_id': 0, 'host_name': u'shinken24', 'has_been_checked': 1, 'check_interval': 5, 'current_event_id': 0, 'execution_time': 0.062339067459106445, 'start_time': 0, 'return_code': 0, 'state_type': 'HARD', 'output': 'Ok : memory consumption is 37%', 'service_description': u'Memory', 'in_checking': False, 'early_timeout': 0, 'in_scheduled_downtime': False, 'attempt': 1, 'state_type_id': 1, 'acknowledgement_type': 1, 'last_state_change': 1433736035.927526, 'instance_id': 0, 'long_output': u'', 'current_problem_id': 0, 'last_time_ok': 1433785103, 'timeout': 0, 'state_id': 0, 'perf_data': u'cached=13%;;;0%;100% buffered=1%;;;0%;100% consumed=37%;80%;90%;0%;100% used=53%;;;0%;100% free=46%;;;0%;100% swap_used=0%;;;0%;100% swap_free=100%;;;0%;100% buffered_abs=36076KB;;;0KB;2058684KB used_abs=1094544KB;;;0KB;2058684KB cached_abs=284628KB;;;0KB;2058684KB consumed_abs=773840KB;;;0KB;2058684KB free_abs=964140KB;;;0KB;2058684KB total_abs=2058684KB;;;0KB;2058684KB swap_total=392188KB;;;0KB;392188KB swap_used=0KB;;;0KB;392188KB swap_free=392188KB;;;0KB;392188KB'}
+        
+        Interesting information ...
+        'state_id': 0 / 'state': 'OK' / 'state_type': 'HARD'
+        'last_state_id': 0 / 'last_state': 'OK' / 'last_state_type': 'HARD'
+        'last_time_critical': 0 / 'last_time_warning': 0 / 'last_time_unknown': 0 / 'last_time_ok': 1433785103
+        'last_chk': 1433785101 / 'last_state_change': 1433736035.927526
+        'in_scheduled_downtime': False
+        """
         logger.debug("[mongo-logs] record availability: %s/%s: %s", hostname, service, b.data)
+        logger.info("[mongo-logs] record availability for: %s/%s: %s", hostname, service, b.data['state'])
 
-        # Host check brok:
-        # ----------------
-        # {'last_time_unreachable': 0, 'last_problem_id': 1, 'check_type': 1, 'retry_interval': 1, 'last_event_id': 1, 'problem_has_been_acknowledged': False, 'last_state': 'DOWN', 'latency': 0, 'last_state_type': 'HARD', 'last_hard_state_change': 1433822140, 'last_time_up': 1433822140, 'percent_state_change': 0.0, 'state': 'UP', 'last_chk': 1433822138, 'last_state_id': 0, 'end_time': 0, 'timeout': 0, 'current_event_id': 1, 'execution_time': 0, 'start_time': 0, 'return_code': 0, 'state_type': 'HARD', 'output': '', 'in_checking': False, 'early_timeout': 0, 'in_scheduled_downtime': False, 'attempt': 1, 'state_type_id': 1, 'acknowledgement_type': 1, 'last_state_change': 1433822140.825969, 'last_time_down': 1433821584, 'instance_id': 0, 'long_output': '', 'current_problem_id': 0, 'host_name': 'sim-0003', 'check_interval': 60, 'state_id': 0, 'has_been_checked': 1, 'perf_data': u''}
-        #
-        # Interesting information ...
-        # 'state_id': 0 / 'state': 'UP' / 'state_type': 'HARD'
-        # 'last_state_id': 0 / 'last_state': 'UP' / 'last_state_type': 'HARD'
-        # 'last_time_unreachable': 0 / 'last_time_up': 1433152221 / 'last_time_down': 0
-        # 'last_chk': 1433152220 / 'last_state_change': 1431420780.184517
-        # 'in_scheduled_downtime': False
-
-        # Service check brok:
-        # -------------------
-        # {'last_problem_id': 0, 'check_type': 0, 'retry_interval': 2, 'last_event_id': 0, 'problem_has_been_acknowledged': False, 'last_time_critical': 0, 'last_time_warning': 0, 'end_time': 0, 'last_state': 'OK', 'latency': 0.2347090244293213, 'last_time_unknown': 0, 'last_state_type': 'HARD', 'last_hard_state_change': 1433736035, 'percent_state_change': 0.0, 'state': 'OK', 'last_chk': 1433785101, 'last_state_id': 0, 'host_name': u'shinken24', 'has_been_checked': 1, 'check_interval': 5, 'current_event_id': 0, 'execution_time': 0.062339067459106445, 'start_time': 0, 'return_code': 0, 'state_type': 'HARD', 'output': 'Ok : memory consumption is 37%', 'service_description': u'Memory', 'in_checking': False, 'early_timeout': 0, 'in_scheduled_downtime': False, 'attempt': 1, 'state_type_id': 1, 'acknowledgement_type': 1, 'last_state_change': 1433736035.927526, 'instance_id': 0, 'long_output': u'', 'current_problem_id': 0, 'last_time_ok': 1433785103, 'timeout': 0, 'state_id': 0, 'perf_data': u'cached=13%;;;0%;100% buffered=1%;;;0%;100% consumed=37%;80%;90%;0%;100% used=53%;;;0%;100% free=46%;;;0%;100% swap_used=0%;;;0%;100% swap_free=100%;;;0%;100% buffered_abs=36076KB;;;0KB;2058684KB used_abs=1094544KB;;;0KB;2058684KB cached_abs=284628KB;;;0KB;2058684KB consumed_abs=773840KB;;;0KB;2058684KB free_abs=964140KB;;;0KB;2058684KB total_abs=2058684KB;;;0KB;2058684KB swap_total=392188KB;;;0KB;392188KB swap_used=0KB;;;0KB;392188KB swap_free=392188KB;;;0KB;392188KB'}
-        #
-        # Interesting information ...
-        # 'state_id': 0 / 'state': 'OK' / 'state_type': 'HARD'
-        # 'last_state_id': 0 / 'last_state': 'OK' / 'last_state_type': 'HARD'
-        # 'last_time_critical': 0 / 'last_time_warning': 0 / 'last_time_unknown': 0 / 'last_time_ok': 1433785103
-        # 'last_chk': 1433785101 / 'last_state_change': 1433736035.927526
-        # 'in_scheduled_downtime': False
-
-        # Only for simulated hosts ...
-        # if not hostname.startswith('kiosk-0001'):
-            # return
 
         # Only for host check at the moment ...
-        if not service is '':
-            return
+        # if not service is '':
+            # logger.warning("[mongo-logs] record availability is only available for hosts checks (%s/%s)", hostname, service)
+            # return
 
         # Ignoring SOFT states ...
         # if b.data['state_type_id']==0:
             # logger.warning("[mongo-logs] record availability for: %s/%s, but no HARD state, ignoring ...", hostname, service)
 
 
+        # Compute number of seconds today ...
         midnight = datetime.datetime.combine(datetime.date.today(), datetime.time.min)
         midnight_timestamp = time.mktime (midnight.timetuple())
-        # Number of seconds today ...
         seconds_today = int(b.data['last_chk']) - midnight_timestamp
         # Scheduled downtime
         scheduled_downtime = bool(b.data['in_scheduled_downtime'])
@@ -391,15 +534,17 @@ class MongoLogs(BaseModule):
                 logger.debug("[mongo-logs] found a today record for: %s", query)
 
                 # Test if yesterday record exists ...
+                # TODO: Not yet implemented: 
+                # - update yesterday with today's first received check will provide a more accurate information.
                 # data_yesterday = self.db[self.hav_collection].find_one( q_yesterday )
                 # if '_id' in data_yesterday:
                     # exists = True
                     # logger.info("[mongo-logs] found a yesterday record for: %s", query)
         except TypeError, exp:
-            logger.error("[mongo-logs] Exception when querying database - no cache query available: %s", str(exp))
+            logger.debug("[mongo-logs] Exception when querying database - no cache query available: %s", str(exp))
         except Exception, exp:
             logger.error("[mongo-logs] Exception when querying database: %s", str(exp))
-            # return
+            return
 
         # Configure recorded data
         current_state = b.data['state']
@@ -410,33 +555,9 @@ class MongoLogs(BaseModule):
         since_last_check = 0
         logger.debug("[mongo-logs] current state: %s, last state: %s", current_state, last_state)
 
-        # Host check
-        if service=='':
-            last_time_unreachable = b.data['last_time_unreachable']
-            last_time_up = b.data['last_time_up']
-            last_time_down = b.data['last_time_down']
-            last_state_change = b.data['last_state_change']
-            last_check = b.data['last_chk']
-            since_last_check = int(last_check - last_check_timestamp)
-
-            # if current_state == 'UP':
-                # since_last_check = int(last_check - last_check_timestamp)
-
-            # elif current_state== 'UNREACHABLE':
-                # since_last_check = int(last_check - last_check_timestamp)
-
-            # elif current_state == 'DOWN':
-                # since_last_check = int(last_check - last_check_timestamp)
-
-        # Service check
-        # else:
-            # To be implemented !!!
-            # if hostname.startswith('kiosk-0001'):
-                # logger.warning("[mongo-logs] last_state_change: %d", last_state_change)
-                # logger.warning("[mongo-logs] last_time_unknown: %d", b.data['last_time_unknown'])
-                # logger.warning("[mongo-logs] last_time_ok: %d", b.data['last_time_ok'])
-                # logger.warning("[mongo-logs] last_time_warning: %d", b.data['last_time_warning'])
-                # logger.warning("[mongo-logs] last_time_critical: %d", b.data['last_time_critical'])
+        # Host/service check
+        last_check = b.data['last_chk']
+        since_last_check = int(last_check - last_check_timestamp)
 
         if exists:
             # Update existing record
@@ -452,7 +573,7 @@ class MongoLogs(BaseModule):
                 data["daily_%d" % data['last_check_state']] += (since_last_check)
 
         else:
-            # Create record
+            # Create new daily record
             data = {}
             data['hostname'] = hostname
             data['service'] = service
@@ -488,35 +609,12 @@ class MongoLogs(BaseModule):
         # Store cached values ...
         try:
             logger.debug("[mongo-logs] store for: %s", self.availability_cache[query])
-            self.db[self.hav_collection].save(self.availability_cache[query])
-
-            self.is_connected = CONNECTED
-            # If we have a backlog from an outage, we flush these lines
-            # First we make a copy, so we can delete elements from
-            # the original cache backlog
-            backloglines = [bl for bl in self.availability_cache_backlog]
-            for backlogline in backloglines:
-                try:
-                    self.db[self.hav_collection].insert(backlogline)
-                    self.availability_cache_backlog.remove(backlogline)
-                except AutoReconnect, exp:
-                    self.is_connected = SWITCHING
-                except Exception, exp:
-                    logger.error("[mongo-logs] Got an exception inserting the availability backlog: %s", str(exp))
+            # self.db[self.hav_collection].save(self.availability_cache[query])
+            self.db[self.hav_collection].replace_one( q_day, self.availability_cache[query], upsert=True )
         except AutoReconnect, exp:
-            if self.is_connected != SWITCHING:
-                self.is_connected = SWITCHING
-                time.sleep(5)
-                # Under normal circumstances after these 5 seconds
-                # we should have a new primary node
-            else:
-                # Not yet? Wait, but try harder.
-                time.sleep(0.1)
-            # At this point we must save the logline for a later attempt
-            # After 5 seconds we either have a successful write
-            # or another exception which means, we are disconnected
-            self.availability_cache_backlog.append(self.availability_cache[query])
-
+            logger.error("[mongo-logs] Autoreconnect exception when updating availability: %s", str(exp))
+            self.is_connected = SWITCHING
+            # Abort update ... no backlog management currently!
         except Exception, exp:
             self.is_connected = DISCONNECTED
             logger.error("[mongo-logs] Database error occurred: %s", exp)
@@ -533,6 +631,7 @@ class MongoLogs(BaseModule):
             logger.debug("[mongo-logs] queue length: %s", self.to_q.qsize())
             now = time.time()
 
+            # DB connection test ?
             if self.db_test_period and db_test_connection < now:
                 logger.info("[mongo-logs] Testing database connection ...")
                 # Test connection every 5 seconds ...
@@ -540,15 +639,20 @@ class MongoLogs(BaseModule):
                 if self.is_connected == DISCONNECTED:
                     logger.warning("[mongo-logs] Trying to connect database ...")
                     self.open()
-                logger.debug("[mongo-logs] Next connection test time ...")
 
+            # Logs commit ?
             if db_commit_next_time < now:
-                logger.debug("[mongo-logs] Commit time ...")
-                # Commit every 5 seconds ...
+                logger.debug("[mongo-logs] Logs commit time ...")
+                # Commit periodically ...
                 db_commit_next_time = now + self.commit_period
-                self.commit_and_rotate_log_db()
-                logger.debug("[mongo-logs] Next commit time ...")
+                self.commit_logs()
 
+            # Logs rotation ?
+            if self.next_logs_rotation < now:
+                logger.debug("[mongo-logs] Logs rotation time ...")
+                self.rotate_logs()
+
+            # Broks management ...
             l = self.to_q.get()
             for b in l:
                 b.prepare()
