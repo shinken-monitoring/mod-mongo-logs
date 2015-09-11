@@ -1,18 +1,43 @@
-Shinken logs MongoDB storage 
-============================
+# Shinken logs MongoDB storage 
 
-Shinken module for storing Shinken logs to mongodb from the Broker daemon
+Shinken broker module used to : 
+- store Shinken logs in a MongoDB database
+- store hosts/services vailability data in a MongoDB database
 
-No need for Livestatus to store Shinken logs and hosts availability data.
+**No more need for Livestatus to store Shinken logs and hosts availability data!**
 
-This module is a must-have for some Shinken Web UI features: host/service history, Shinken activity, hosts availability, ...
-
-
-**Please note that this module is still on tests ... and do not hesitate to report any issue!**
+**Note:** This module is a must-have for the new Web UI features: host/service history, Shinken activity, hosts availability, ...
 
 
-# Doc (in progress ...)
-## Logs collection
+## Main features
+
+This module intercepts Shinken logs and analyses each to store it in MongoDB collection. The logs are then available for an application such as Web UI: see https://github.com/shinken-monitoring/mod-webui.
+
+This module also intercepts Shinken hosts and services checks results to store daily data in MongoDB collection. For each concerned host and service, the data stored allow to have a daily availability for the host/service.
+
+Concerned hosts and services are defined thanks to:
+- host availability is always stored
+- service availability is stored depending upon a configurable filter: 
+    - regexp on the service description
+    - rules on the service business impact
+For more information see, examples hereunder and configuration file that is documented.
+
+For each host/service, the availability follow the rules:
+- one record per service per day
+- for each day, 86400 seconds
+- first check result received is stored (state and timestamp)
+- last check result received is stored (state and timestamp)
+- day period outside of first/last check is considered as unchecked (daily_4 seconds)
+- each state duration seconds is stored (daily_0, daily_1, daily_2)
+
+With this information it is possible to know how many seconds is spent in a certain state
+
+**Note:** the pros of this method is that is is really a simple and 'real time' time to get availability for an host/service. Np need to parse a huge amount of logs to get some data!
+
+**Note:** the only cons of this method is that it is not very precise ... based on the first/last daily received check, it does not care about the previous day last state! 
+
+## Doc (in progress ...)
+### Logs collection
 
 Logs are stored in a collection which default name is *logs*
 
@@ -108,7 +133,7 @@ Logs stored in the mongodb collection (example):
     { "_id" : { "$oid" : "55f1193ea5d69827ccea96a9" }, "comment" : "", "plugin_output" : "", "attempt" : 0, "message" : "[1441863993] INFO: [broker-master] We have our arbiters: {0: {'broks': {}, 'last_connection': 0, 'name': u'arbiter-master', 'hard_ssl_name_check': False, 'uri': u'http://localhost:7770/', 'instance_id': 0, 'running_id': 0, 'address': u'localhost', 'use_ssl': False, 'port': 7770}}", "logclass" : 2, "options" : "", "state_type" : "", "lineno" : 1007, "state" : 0, "host_name" : "", "time" : 1441863993, "service_description" : "", "logobject" : 0, "type" : "INFO", "contact_name" : "", "command_name" : "" } ,
 ```
 
-## Availability collection
+### Availability collection
 
 Hosts/services daily availability are stored in a collection which default name is *availability*
 
@@ -141,8 +166,7 @@ Example:
 ```
 
 
-Requirements 
-=============
+## Requirements 
 Use pymongo version > 3.0.
 
 ```
@@ -150,8 +174,7 @@ Use pymongo version > 3.0.
 ```
 
 
-Enabling Mongo logs 
-=============================
+## Enabling Mongo logs 
 
 To use the mongo-logs module you must declare it in your broker configuration.
 ```
@@ -164,7 +187,7 @@ To use the mongo-logs module you must declare it in your broker configuration.
 ```
 
 
-The module configuration is defined in the file: mongo-logs.cfg.
+The module configuration is defined in the file: `mongo-logs.cfg`.
 
 Default configuration needs to be tuned up to your MongoDB configuration. 
 
