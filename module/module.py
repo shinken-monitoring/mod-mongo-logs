@@ -161,10 +161,10 @@ class MongoLogs(BaseModule):
         self.services_cache = {}
         services_filter = getattr(mod_conf, 'services_filter', '')
         logger.info('[mongo-logs] services filtering: %s', services_filter)
-        
+
         self.filter_service_description = None
         self.filter_service_criticality = None
-        if services_filter: 
+        if services_filter:
             # Decode services filter
             services_filter = [s for s in services_filter.split(',')]
             for rule in services_filter:
@@ -178,7 +178,7 @@ class MongoLogs(BaseModule):
                 if len(elts) > 1:
                     t = elts[0].lower()
                     s = elts[1].lower()
-                
+
                 if t == 'service_description':
                     self.filter_service_description = rule
                     logger.info('[mongo-logs] services will be filtered by description: %s', self.filter_service_description)
@@ -186,7 +186,7 @@ class MongoLogs(BaseModule):
                 if t == 'bp' or t == 'bi':
                     self.filter_service_criticality = s
                     logger.info('[mongo-logs] services will be filtered by criticality: %s', self.filter_service_criticality)
-                    
+
 
         # Elasticsearch configuration part ... prepare next version !
         # self.elasticsearch_uri = getattr(mod_conf, 'elasticsearch_uri', None)
@@ -282,14 +282,13 @@ class MongoLogs(BaseModule):
         self.next_logs_rotation = time.mktime(nextrotation.timetuple())
         logger.info("[mongo-logs] next log rotation at %s " % time.asctime(time.localtime(self.next_logs_rotation)))
 
-
     def commit_logs(self):
         """
         Peridically called (commit_period), this method prepares a bunch of queued logs (commit_colume) to insert them in the DB
         """
         if not self.logs_cache:
             return
-        
+
         logger.debug("[mongo-logs] commiting ...")
 
         logger.debug("[mongo-logs] %d lines to insert in database (max insertion is %d lines)", len(self.logs_cache), self.commit_volume)
@@ -325,133 +324,90 @@ class MongoLogs(BaseModule):
             logger.error("[mongo-logs] Database error occurred when commiting: %s", exp)
         logger.debug("[mongo-logs] time to insert %s logs (%2.4f)", logs_to_commit, time.time() - now)
 
-
     def manage_brok(self, brok):
         """
         Overloaded parent class manage_brok method:
         - select which broks management functions are to be called
         """
+        manage = getattr(self, 'manage_' + brok.type + '_brok', None)
+        if manage:
+            return manage(brok)
+
+    def manage_initial_host_status_brok(self, brok):
         start = time.clock()
+        host_name = brok.data['host_name']
+        service_description = ''
+        service_id = host_name+"/"+service_description
+        logger.debug("[mongo-logs] initial host status received: %s (bi=%d)", host_name, int (brok.data["business_impact"]))
 
-        # Initial host state : may be interesting ?
-        if brok.type == 'initial_host_status':
-            host_name = brok.data['host_name']
-            service_description = ''
-            service_id = host_name+"/"+service_description
-            logger.debug("[mongo-logs] initial host status received: %s (bi=%d)", host_name, int (brok.data["business_impact"]))
+        self.services_cache[service_id] = { "hostname": host_name, "service": service_description }
+        logger.info("[mongo-logs] host registered: %s (bi=%d)", service_id, brok.data["business_impact"])
 
-            self.services_cache[service_id] = { "hostname": host_name, "service": service_description }
-            logger.info("[mongo-logs] host registered: %s (bi=%d)", service_id, brok.data["business_impact"])
-            
-            #
-            # Do not check filters for an host ... always store availability
-            # 
-            # Filter service if needed: reference service in services cache ...
-            # ... if description filter matches ...
-            # if self.filter_service_description:
-                # logger.debug("[mongo-logs] service description filter testing ...")
-                # pat = re.compile(self.filter_service_description, re.IGNORECASE)
-                # if pat.search(service_id):
-                    # self.services_cache[service_id] = { "hostname": host_name, "service": service_description }
-                    # logger.info("[mongo-logs] service description filter matches for: %s (bi=%d)", service_id, brok.data["business_impact"])
-            
-            # ... or if criticality filter matches.
-            # if self.filter_service_criticality:
-                # logger.debug("[mongo-logs] service criticality filter testing ...")
-                # include = False
-                # bi = int (brok.data["business_impact"])
-                # if self.filter_service_criticality.startswith('>='):
-                    # if bi >= int(self.filter_service_criticality[2:]):
-                        # include = True
-                # elif self.filter_service_criticality.startswith('<='):
-                    # if bi <= int(self.filter_service_criticality[2:]):
-                        # include = True
-                # elif self.filter_service_criticality.startswith('>'):
-                    # if bi > int(self.filter_service_criticality[1:]):
-                        # include = True
-                # elif self.filter_service_criticality.startswith('<'):
-                    # if bi < int(self.filter_service_criticality[1:]):
-                        # include = True
-                # elif self.filter_service_criticality.startswith('='):
-                    # if bi == int(self.filter_service_criticality[1:]):
-                        # include = True
-                # if include:
-                    # self.services_cache[service_id] = { "hostname": host_name, "service": service_description }
-                    # logger.info("[mongo-logs] criticality filter matches for: %s (bi=%d)", service_id, brok.data["business_impact"])
-                    
-                    
-        # Initial service state : may be interesting ?
-        if brok.type == 'initial_service_status':
-            host_name = brok.data['host_name']
-            service_description = brok.data['service_description']
-            service_id = host_name+"/"+service_description
-            logger.debug("[mongo-logs] initial service status received: %s (bi=%d)", host_name, int (brok.data["business_impact"]))
+    def manage_host_check_result_brok(self, brok):
+        start = time.clock()
+        host_name = brok.data['host_name']
+        service_description = ''
+        service_id = host_name+"/"+service_description
+        logger.debug("[mongo-logs] host check result received: %s", service_id)
 
-            # Filter service if needed: reference service in services cache ...
-            # ... if description filter matches ...
-            if self.filter_service_description:
-                pat = re.compile(self.filter_service_description, re.IGNORECASE)
-                if pat.search(service_id):
-                    self.services_cache[service_id] = { "hostname": host_name, "service": service_description }
-                    logger.info("[mongo-logs] service description filter matches for: %s (bi=%d)", service_id, brok.data["business_impact"])
-            
-            # ... or if criticality filter matches.
-            if self.filter_service_criticality:
-                include = False
-                bi = int (brok.data["business_impact"])
-                if self.filter_service_criticality.startswith('>='):
-                    if bi >= int(self.filter_service_criticality[2:]):
-                        include = True
-                elif self.filter_service_criticality.startswith('<='):
-                    if bi <= int(self.filter_service_criticality[2:]):
-                        include = True
-                elif self.filter_service_criticality.startswith('>'):
-                    if bi > int(self.filter_service_criticality[1:]):
-                        include = True
-                elif self.filter_service_criticality.startswith('<'):
-                    if bi < int(self.filter_service_criticality[1:]):
-                        include = True
-                elif self.filter_service_criticality.startswith('='):
-                    if bi == int(self.filter_service_criticality[1:]):
-                        include = True
-                if include:
-                    self.services_cache[service_id] = { "hostname": host_name, "service": service_description }
-                    logger.info("[mongo-logs] criticality filter matches for: %s (bi=%d)", service_id, brok.data["business_impact"])
-        
-        # Manage host check result
-        if brok.type == 'host_check_result':
-            host_name = brok.data['host_name']
-            service_description = ''
-            service_id = host_name+"/"+service_description
-            logger.debug("[mongo-logs] host check result received: %s", host_name)
-            
-            if self.services_cache and service_id in self.services_cache:
-                # logger.info("[mongo-logs] services_cache: %s", service_id, brok.data["business_impact"])
-                self.record_availability(host_name, '', brok)
-                logger.debug("[mongo-logs] host check result: %s, %.2gs", host_name, time.clock() - start)
+        if self.services_cache and service_id in self.services_cache:
+            self.record_availability(host_name, service_description, brok)
+            logger.debug("[mongo-logs] host check result: %s, %.2gs", service_id, time.clock() - start)
 
-        # Manage service check result
-        if brok.type == 'service_check_result':
-            host_name = brok.data['host_name']
-            service_description = brok.data['service_description']
-            service_id = host_name+"/"+service_description
-            logger.debug("[mongo-logs] service check result received: %s", service_id)
+    def manage_initial_service_status_brok(self, brok):
+        start = time.clock()
+        host_name = brok.data['host_name']
+        service_description = brok.data['service_description']
+        service_id = host_name+"/"+service_description
+        logger.debug("[mongo-logs] initial service status received: %s (bi=%d)", host_name, int (brok.data["business_impact"]))
 
-            if self.services_cache and service_id in self.services_cache:
-                self.record_availability(host_name, service_description, brok)
-                logger.debug("[mongo-logs] host check result: %s, %.2gs", host_name, time.clock() - start)
+        # Filter service if needed: reference service in services cache ...
+        # ... if description filter matches ...
+        if self.filter_service_description:
+            pat = re.compile(self.filter_service_description, re.IGNORECASE)
+            if pat.search(service_id):
+                self.services_cache[service_id] = { "hostname": host_name, "service": service_description }
+                logger.info("[mongo-logs] service description filter matches for: %s (bi=%d)", service_id, brok.data["business_impact"])
 
-        # Manage log brok
-        if brok.type == 'log':
-            self.record_log(brok)
-            logger.debug("[mongo-logs] record log: %.2gs", time.clock() - start)
+        # ... or if criticality filter matches.
+        if self.filter_service_criticality:
+            include = False
+            bi = int (brok.data["business_impact"])
+            if self.filter_service_criticality.startswith('>='):
+                if bi >= int(self.filter_service_criticality[2:]):
+                    include = True
+            elif self.filter_service_criticality.startswith('<='):
+                if bi <= int(self.filter_service_criticality[2:]):
+                    include = True
+            elif self.filter_service_criticality.startswith('>'):
+                if bi > int(self.filter_service_criticality[1:]):
+                    include = True
+            elif self.filter_service_criticality.startswith('<'):
+                if bi < int(self.filter_service_criticality[1:]):
+                    include = True
+            elif self.filter_service_criticality.startswith('='):
+                if bi == int(self.filter_service_criticality[1:]):
+                    include = True
+            if include:
+                self.services_cache[service_id] = { "hostname": host_name, "service": service_description }
+                logger.info("[mongo-logs] criticality filter matches for: %s (bi=%d)", service_id, brok.data["business_impact"])
 
-    def record_log(self, b):
+    def manage_service_check_result_brok(self, brok):
+        start = time.clock()
+        host_name = brok.data['host_name']
+        service_description = brok.data['service_description']
+        service_id = host_name+"/"+service_description
+        logger.debug("[mongo-logs] service check result received: %s", service_id)
+
+        if self.services_cache and service_id in self.services_cache:
+            self.record_availability(host_name, service_description, brok)
+            logger.debug("[mongo-logs] service check result: %s, %.2gs", service_id, time.clock() - start)
+
+    def manage_log_brok(self, brok):
         """
         Parse a Shinken log brok to enqueue a log line for DB insertion
         """
-        data = b.data
-        line = data['log']
+        line = brok.data['log']
         if re.match("^\[[0-9]*\] [A-Z][a-z]*.:", line):
             # Match log which NOT have to be stored
             logger.warning('[mongo-logs] do not store: %s', line)
@@ -467,17 +423,16 @@ class MongoLogs(BaseModule):
 
         return
 
-    ## Update hosts/services availability
     def record_availability(self, hostname, service, b):
         """
         Parse a Shinken check brok to compute availability and store a daily availability record in the DB
-        
+
         Main principles:
-        
+
         Host check brok:
         ----------------
         {'last_time_unreachable': 0, 'last_problem_id': 1, 'check_type': 1, 'retry_interval': 1, 'last_event_id': 1, 'problem_has_been_acknowledged': False, 'last_state': 'DOWN', 'latency': 0, 'last_state_type': 'HARD', 'last_hard_state_change': 1433822140, 'last_time_up': 1433822140, 'percent_state_change': 0.0, 'state': 'UP', 'last_chk': 1433822138, 'last_state_id': 0, 'end_time': 0, 'timeout': 0, 'current_event_id': 1, 'execution_time': 0, 'start_time': 0, 'return_code': 0, 'state_type': 'HARD', 'output': '', 'in_checking': False, 'early_timeout': 0, 'in_scheduled_downtime': False, 'attempt': 1, 'state_type_id': 1, 'acknowledgement_type': 1, 'last_state_change': 1433822140.825969, 'last_time_down': 1433821584, 'instance_id': 0, 'long_output': '', 'current_problem_id': 0, 'host_name': 'sim-0003', 'check_interval': 60, 'state_id': 0, 'has_been_checked': 1, 'perf_data': u''}
-        
+
         Interesting information ...
         'state_id': 0 / 'state': 'UP' / 'state_type': 'HARD'
         'last_state_id': 0 / 'last_state': 'UP' / 'last_state_type': 'HARD'
@@ -488,7 +443,7 @@ class MongoLogs(BaseModule):
         Service check brok:
         -------------------
         {'last_problem_id': 0, 'check_type': 0, 'retry_interval': 2, 'last_event_id': 0, 'problem_has_been_acknowledged': False, 'last_time_critical': 0, 'last_time_warning': 0, 'end_time': 0, 'last_state': 'OK', 'latency': 0.2347090244293213, 'last_time_unknown': 0, 'last_state_type': 'HARD', 'last_hard_state_change': 1433736035, 'percent_state_change': 0.0, 'state': 'OK', 'last_chk': 1433785101, 'last_state_id': 0, 'host_name': u'shinken24', 'has_been_checked': 1, 'check_interval': 5, 'current_event_id': 0, 'execution_time': 0.062339067459106445, 'start_time': 0, 'return_code': 0, 'state_type': 'HARD', 'output': 'Ok : memory consumption is 37%', 'service_description': u'Memory', 'in_checking': False, 'early_timeout': 0, 'in_scheduled_downtime': False, 'attempt': 1, 'state_type_id': 1, 'acknowledgement_type': 1, 'last_state_change': 1433736035.927526, 'instance_id': 0, 'long_output': u'', 'current_problem_id': 0, 'last_time_ok': 1433785103, 'timeout': 0, 'state_id': 0, 'perf_data': u'cached=13%;;;0%;100% buffered=1%;;;0%;100% consumed=37%;80%;90%;0%;100% used=53%;;;0%;100% free=46%;;;0%;100% swap_used=0%;;;0%;100% swap_free=100%;;;0%;100% buffered_abs=36076KB;;;0KB;2058684KB used_abs=1094544KB;;;0KB;2058684KB cached_abs=284628KB;;;0KB;2058684KB consumed_abs=773840KB;;;0KB;2058684KB free_abs=964140KB;;;0KB;2058684KB total_abs=2058684KB;;;0KB;2058684KB swap_total=392188KB;;;0KB;392188KB swap_used=0KB;;;0KB;392188KB swap_free=392188KB;;;0KB;392188KB'}
-        
+
         Interesting information ...
         'state_id': 0 / 'state': 'OK' / 'state_type': 'HARD'
         'last_state_id': 0 / 'last_state': 'OK' / 'last_state_type': 'HARD'
@@ -496,8 +451,8 @@ class MongoLogs(BaseModule):
         'last_chk': 1433785101 / 'last_state_change': 1433736035.927526
         'in_scheduled_downtime': False
         """
+        logger.debug("[mongo-logs] record availability for: %s/%s: %s", hostname, service, b.data['state'])
         logger.debug("[mongo-logs] record availability: %s/%s: %s", hostname, service, b.data)
-        logger.info("[mongo-logs] record availability for: %s/%s: %s", hostname, service, b.data['state'])
 
 
         # Only for host check at the moment ...
@@ -534,7 +489,7 @@ class MongoLogs(BaseModule):
                 logger.debug("[mongo-logs] found a today record for: %s", query)
 
                 # Test if yesterday record exists ...
-                # TODO: Not yet implemented: 
+                # TODO: Not yet implemented:
                 # - update yesterday with today's first received check will provide a more accurate information.
                 # data_yesterday = self.db[self.hav_collection].find_one( q_yesterday )
                 # if '_id' in data_yesterday:
