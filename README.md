@@ -2,7 +2,7 @@
 
 Shinken broker module used to :
 - store Shinken logs in a MongoDB database
-- store hosts/services vailability data in a MongoDB database
+- store hosts/services availability data in a MongoDB database
 
 **No more need for Livestatus to store Shinken logs and hosts availability data!**
 
