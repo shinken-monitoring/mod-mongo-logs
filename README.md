@@ -1,6 +1,6 @@
-# Shinken logs MongoDB storage 
+# Shinken logs MongoDB storage
 
-Shinken broker module used to : 
+Shinken broker module used to :
 - store Shinken logs in a MongoDB database
 - store hosts/services vailability data in a MongoDB database
 
@@ -11,13 +11,13 @@ Shinken broker module used to :
 
 ## Main features
 
-This module intercepts Shinken logs and analyses each to store it in MongoDB collection. The logs are then available for an application such as Web UI: see https://github.com/shinken-monitoring/mod-webui.
+This module intercepts Shinken logs and analyses each log to store it in MongoDB collection. The logs are then available for an application such as Web UI: see https://github.com/shinken-monitoring/mod-webui.
 
 This module also intercepts Shinken hosts and services checks results to store daily data in MongoDB collection. For each concerned host and service, the data stored allow to have a daily availability for the host/service.
 
-Concerned hosts and services are defined thanks to:
+Concerned hosts and services are defined as is:
 - host availability is always stored
-- service availability is stored depending upon a configurable filter: 
+- service availability is stored depending upon a configurable filter:
     - regexp on the service description
     - rules on the service business impact
 For more information see, examples hereunder and configuration file that is documented.
@@ -34,18 +34,137 @@ With this information it is possible to know how many seconds is spent in a cert
 
 **Note:** the pros of this method is that is is really a simple and 'real time' time to get availability for an host/service. Np need to parse a huge amount of logs to get some data!
 
-**Note:** the only cons of this method is that it is not very precise ... based on the first/last daily received check, it does not care about the previous day last state! 
+**Note:** the only cons of this method is that it is not very precise ... based on the first/last daily received check, it does not care about the previous day last state!
 
-## Doc (in progress ...)
+
+
+## Requirements
+Use pymongo version > 3.0.
+
+```
+   pip install pymongo>=3
+```
+
+
+## Enabling Mongo logs
+
+To use the mongo-logs module you must declare it in your broker configuration.
+```
+   define broker {
+      ...
+
+      modules    	 ..., mongo-logs
+
+   }
+```
+
+
+The module configuration is defined in the file: `mongo-logs.cfg`.
+
+Default configuration needs to be tuned up to your MongoDB configuration.
+
+```
+## Module:      mongo-logs
+## Loaded by:   Broker
+# Store the Shinken logs in a mongodb database
+# Store hosts/services availability in a mongodb database
+#
+# This module is necessary if you intend to use the logs and availability features offered
+# by the Shinken WebUI2
+#
+# -----------------
+# IMPORTANT ADVICE:
+# -----------------
+# If you change the default configuration in this file, you MUST copy the same configuration
+# parameters in your webui2.cfg file.
+#
+# Please note that the max_logs_age parameter is not used in the WebUI
+#
+define module {
+   module_name         mongo-logs
+   module_type         mongo-logs
+
+   # MongoDB connection string
+   # EXAMPLE
+   # To describe a connection to a replica set named test, with the following mongod hosts:
+   #   db1.example.net on port 27017 with sysop credentials and
+   #   db2.example.net on port 2500.
+   # You would use a connection string that resembles the following:
+   #   uri     mongodb://sysop:password@db1.example.net,db2.example.net:2500/?replicaSet=test
+   #
+   # Default is a non replicated localhost server
+   #uri                  mongodb://localhost
+
+   # Database name where to store the logs/availability collection
+   # Default is shinken
+   #database             shinken
+
+   # DB connection test period
+   # Every db_test_period seconds, the module tests if the DB connection is alive
+   # Default is 0 to skip this test
+   #db_test_period    300
+
+   ### ------------------------------------------------------------------------
+   ### Logs management
+   ### ------------------------------------------------------------------------
+   # Logs collection name
+   # Default is a collection named logs
+   #logs_collection      logs
+
+   # Logs rotation
+   #
+   # Remove logs older than the specified value
+   # Value is specified as :
+   # 1d: 1 day
+   # 3m: 3 months ...
+   # d = days, w = weeks, m = months, y = years
+   # Default is 3 months
+   #max_logs_age    3m
+
+   # Commit volume
+   # The module commits at most commit_volume logs in the DB at every commit period
+   # Default is 1000 lines
+   #commit_volume     1000
+
+   # Commit period
+   # Every commit_period seconds, the module stores the received logs in the DB
+   # Default is to commit every 60 seconds
+   #commit_period     60
+
+   ### ------------------------------------------------------------------------
+   ### Hosts/services availability management
+   ### ------------------------------------------------------------------------
+   # Hosts/services availability collection name
+   # Default is a collection named availability
+   #hav_collection      availability
+
+   # Services filtering
+   # Filter is declared as a comma separated list of items:
+   # An item can be a regexp which is matched against service description (hostname/service)
+   #  ^test*, matches all hosts which name starts with test
+   #  /test*, matches all services which name starts with test
+   #
+   # An item containing : is a specific filter (only bi is supported currently)
+   #  bi:>x, bi:>=x, bi:<x, bi:<=x, bi:=x to match business impact
+
+   # default is to consider only the services which business impact is > 4
+   # 3 is the default value for business impact if property is not explicitely declared
+   # Default is only bi>4 (most important services)
+   #services_filter bi:>4
+}
+
+```
+
+## Doc
 ### Logs collection
 
 Logs are stored in a collection which default name is *logs*
 
-Each document in the collection contain always the same fields wichever is the stored log line: 
+Each document in the collection contain always the same fields wichever is the stored log line:
 
 - _id: added by mongodb when document is inserted
 
-- type: 
+- type:
     -   INFO, DEBUG, WARNING, ERROR for specific Shinken logs, or
     -   NAGIOS log type (eg. SERVICE ALERT, PASSIVE HOST CHECK, ...)
 
@@ -57,7 +176,7 @@ Each document in the collection contain always the same fields wichever is the s
     LOGOBJECT_CONTACT = 3
 ```
 
-- logclass: 
+- logclass:
 ```
     LOGCLASS_INFO = 0          # all messages not in any other class
     LOGCLASS_ALERT = 1         # alerts: the change service/host state
@@ -70,19 +189,19 @@ Each document in the collection contain always the same fields wichever is the s
 - time: log line UTC timestamp
 - message: complete log line message
 
-The following fields are always present but their value are completed depending upon the message logclass value: 
-- comment 
+The following fields are always present but their value are completed depending upon the message logclass value:
+- comment
 - plugin_output
 - attempt
-- options 
-- state_type 
-- state 
-- host_name 
-- service_description 
-- contact_name 
-- command_name 
+- options
+- state_type
+- state
+- host_name
+- service_description
+- contact_name
+- command_name
 
-Logs stored in the mongodb collection (example): 
+Logs stored in the mongodb collection (example):
 ```
     { "_id" : "shinken-test", "last_test" : 1441968270.48028 } ,
     { "_id" : { "$oid" : "55f118cca5d69827ccea9520" }, "comment" : "", "plugin_output" : "", "attempt" : 0, "message" : "[1441863874] TIMEPERIOD TRANSITION: workhours;-1;0", "logclass" : 2, "options" : "", "state_type" : "", "lineno" : 614, "state" : 0, "host_name" : "", "time" : 1441863874, "service_description" : "", "logobject" : 0, "type" : "TIMEPERIOD TRANSITION", "contact_name" : "", "command_name" : "" } ,
@@ -137,7 +256,7 @@ Logs stored in the mongodb collection (example):
 
 Hosts/services daily availability are stored in a collection which default name is *availability*
 
-Each document in the collection contain always the same fields: 
+Each document in the collection contain always the same fields:
 
 - _id: added by mongodb when document is inserted
 
@@ -156,7 +275,7 @@ Each document in the collection contain always the same fields:
 - daily_4: number of seconds in state 4 (OTHER) - unchecked period ...
 - is_downtime: currently in downtime
 
-Example: 
+Example:
 ```
     { "_id" : { "$oid" : "55f118eac4e7774e6d845809" }, "first_check_state" : 1, "day_ts" : 1441836000, "service" : "", "first_check_timestamp" : 1441863885, "daily_4" : 59028, "hostname" : "pi2", "daily_1" : 27372, "daily_0" : 0, "daily_3" : 0, "daily_2" : 0, "is_downtime" : "0", "last_check_timestamp" : 1441891257, "day" : "2015-09-10", "last_check_state" : 1 } ,
     { "_id" : { "$oid" : "55f118eac4e7774e6d84580a" }, "first_check_state" : 1, "day_ts" : 1441836000, "service" : "", "first_check_timestamp" : 1441863894, "daily_4" : 59044, "hostname" : "pi1", "daily_1" : 27356, "daily_0" : 0, "daily_3" : 0, "daily_2" : 0, "is_downtime" : "0", "last_check_timestamp" : 1441891250, "day" : "2015-09-10", "last_check_state" : 1 } ,
@@ -164,119 +283,3 @@ Example:
     { "_id" : { "$oid" : "55f118ebc4e7774e6d84580c" }, "first_check_state" : 0, "day_ts" : 1441836000, "service" : "", "first_check_timestamp" : 1441863912, "daily_4" : 59273, "hostname" : "webui", "daily_1" : 0, "daily_0" : 27127, "daily_3" : 0, "daily_2" : 0, "is_downtime" : "0", "last_check_timestamp" : 1441891039, "day" : "2015-09-10", "last_check_state" : 0 } ,
     { "_id" : { "$oid" : "55f1289a72777c74656f0d56" }, "first_check_state" : 0, "day_ts" : 1441836000, "service" : "", "first_check_timestamp" : 1441867909, "daily_4" : 83545, "hostname" : "localhost", "daily_1" : 0, "daily_0" : 2855, "daily_3" : 0, "daily_2" : 0, "is_downtime" : "0", "last_check_timestamp" : 1441870764, "day" : "2015-09-10", "last_check_state" : 0 }
 ```
-
-
-## Requirements 
-Use pymongo version > 3.0.
-
-```
-   pip install pymongo
-```
-
-
-## Enabling Mongo logs 
-
-To use the mongo-logs module you must declare it in your broker configuration.
-```
-   define broker {
-      ... 
-
-      modules    	 ..., mongo-logs
-
-   }
-```
-
-
-The module configuration is defined in the file: `mongo-logs.cfg`.
-
-Default configuration needs to be tuned up to your MongoDB configuration. 
-
-```
-## Module:      mongo-logs
-## Loaded by:   Broker
-# Store the Shinken logs in a mongodb database
-# Store hosts/services availability in a mongodb database
-#
-# This module is necessary if you intend to use the logs and availability features offered
-# by the Shinken WebUI2
-#
-# -----------------
-# IMPORTANT ADVICE:
-# -----------------
-# If you change the default configuration in this file, you MUST copy the same configuration
-# parameters in your webui2.cfg file.
-# 
-# Please note that the max_logs_age parameter is not used in the WebUI
-#
-define module {
-   module_name         mongo-logs
-   module_type         mongo-logs
-   
-   # Elasticsearch part ...
-   # elasticsearch_uri    http://localhost:9200
-
-   # MongoDB part ...
-   uri                  mongodb://localhost
-   
-   # If you are running a MongoDB cluster (called a “replica set” in MongoDB),
-   # you need to specify it's name here. 
-   # With this option set, you can also write the mongodb_uri as a comma-separated
-   # list of host:port items. (But one is enough, it will be used as a “seed”)
-   #replica_set
-
-   # Database name where to store the logs/availability collection
-   database             shinken
-   
-   # Database authentication
-   #username
-   #password
-   
-   # DB connection test period
-   # Every db_test_period seconds, the module tests if the DB connection is alive
-   # 0 to skip this test
-   #db_test_period    60
-   
-   ### ------------------------------------------------------------------------
-   ### Logs management
-   ### ------------------------------------------------------------------------
-   # Logs collection name
-   logs_collection      logs
-   
-   # Logs rotation
-   #
-   # Remove logs older than the specified value
-   # Value is specified as : 
-   # 1d: 1 day
-   # 3m: 3 months ...
-   max_logs_age    3m  ; d = days, w = weeks, m = months, y = years
-   
-   # Commit volume
-   # The module commits at most commit_volume logs in the DB at every commit period
-   #commit_volume     1000
-   
-   # Commit period
-   # Every commit_period seconds, the module stores the received logs in the DB
-   #commit_period     10
-   
-   ### ------------------------------------------------------------------------
-   ### Hosts/services management
-   ### ------------------------------------------------------------------------
-   # Hosts/services availability collection name
-   #hav_collection      availability
-   
-   # Services filtering
-   # Filter is declared as a comma separated list of items: 
-   # An item can be a regexp which is matched against service description (hostname/service)
-   #  ^test*, matches all hosts which name starts with test
-   #  /test*, matches all services which name starts with test
-   #
-   # An item containing : is a specific filter (only bi is supported currently)
-   #  bi:>x, bi:>=x, bi:<x, bi:<=x, bi:=x to match business impact
-   
-   # default is to consider only the services which business impact is > 4
-   # 3 is the default value for business impact if property is not explicitely declared
-   services_filter ^SSH Connexion$, bi:>4
-}
-```
-
-It's done :)
