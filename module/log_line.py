@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# Copyright (C) 2009-2012:
+# Copyright (C) 2009-2015:
 #    Gabes Jean, naparuba@gmail.com
 #    Gerhard Lausser, Gerhard.Lausser@consol.de
 #    Gregory Starck, g.starck@gmail.com
@@ -170,7 +170,7 @@ class Logline(dict):
                     logobject = LOGOBJECT_HOST
                     logclass = LOGCLASS_PASSIVECHECK
                     host_name, state, check_plugin_output = options.split(';', 2)
-                    
+
                 elif type == 'SERVICE EVENT HANDLER':
                     logobject = LOGOBJECT_SERVICE
                     logclass = LOGCLASS_NOTIFICATION
@@ -189,13 +189,13 @@ class Logline(dict):
                 elif type == 'TIMEPERIOD TRANSITION':
                     logobject = LOGOBJECT_INFO
                     logclass = LOGCLASS_PROGRAM
-                    
+
                 elif type == 'INFO' or \
                      type == 'WARNING' or \
                      type == 'ERROR':
                     logobject = LOGOBJECT_INFO
                     logclass = LOGCLASS_PROGRAM
-                    
+
                 elif type.startswith('starting...') or \
                      type.startswith('shutting down...') or \
                      type.startswith('Bailing out') or \

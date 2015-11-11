@@ -1,7 +1,7 @@
 {
   "name": "mongo-logs",
   "types": ["module"],
-  "version": "1.1.0",
+  "version": "1.2.0",
   "homepage": "http://github.com/shinken-monitoring/mod-mongo-logs",
   "author": "Frédéric Mohier",
   "description": "Store Shinken logs and hosts/services availability in MongoDB without Livestatus",
@@ -18,7 +18,7 @@
     "logs",
     "log",
     "logstore",
-    "availability", 
+    "availability",
     "mongodb"
   ],
   "dependencies": {
