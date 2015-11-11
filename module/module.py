@@ -55,7 +55,7 @@ from .log_line import (
 try:
     import pymongo
     from pymongo import MongoClient
-    from pymongo.errors import AutoReconnect
+    from pymongo.errors import AutoReconnect, ConnectionFailure
 except ImportError:
     logger.error('[mongo-logs] Can not import pymongo and/or MongoClient'
                  'Your pymongo lib is too old. '
@@ -66,7 +66,6 @@ except ImportError:
 from shinken.basemodule import BaseModule
 from shinken.objects.module import Module
 from shinken.log import logger
-from shinken.util import to_bool
 
 from collections import deque
 
@@ -97,14 +96,6 @@ class MongoLogsError(Exception):
 class MongoLogs(BaseModule):
 
     def __init__(self, mod_conf):
-        try:
-            import pymongo
-        except ImportError:
-            logger.error('[WebUI-mongo-logs] Can not import pymongo'
-                         'Please install it with a 3.x+ version from '
-                         'https://pypi.python.org/pypi/pymongo')
-            raise
-
         BaseModule.__init__(self, mod_conf)
 
         self.uri = getattr(mod_conf, 'uri', 'mongodb://localhost')
@@ -119,11 +110,9 @@ class MongoLogs(BaseModule):
             return None
 
         self.database = getattr(mod_conf, 'database', 'shinken')
-        self.username = getattr(mod_conf, 'username', None)
-        self.password = getattr(mod_conf, 'password', None)
-        logger.info('[mongo-logs] database: %s, username: %s', self.database, self.username)
+        logger.info('[mongo-logs] database: %s', self.database)
 
-        self.commit_period = int(getattr(mod_conf, 'commit_period', '10'))
+        self.commit_period = int(getattr(mod_conf, 'commit_period', '60'))
         logger.info('[mongo-logs] periodical commit period: %ds', self.commit_period)
 
         self.commit_volume = int(getattr(mod_conf, 'commit_volume', '1000'))
@@ -137,8 +126,6 @@ class MongoLogs(BaseModule):
 
         self.hav_collection = getattr(mod_conf, 'hav_collection', 'availability')
         logger.info('[mongo-logs] hosts availability collection: %s', self.hav_collection)
-
-        self.mongodb_fsync = to_bool(getattr(mod_conf, 'mongodb_fsync', "True"))
 
         max_logs_age = getattr(mod_conf, 'max_logs_age', '365')
         maxmatch = re.match(r'^(\d+)([dwmy]*)$', max_logs_age)
@@ -203,6 +190,8 @@ class MongoLogs(BaseModule):
 
         self.is_connected = DISCONNECTED
 
+        self.next_logs_rotation = time.time() + 5000
+
         self.logs_cache = deque()
 
         self.availability_cache = {}
@@ -212,44 +201,39 @@ class MongoLogs(BaseModule):
         self.app = app
 
     def init(self):
-        self.open()
+        return True
 
     def open(self):
-        try:
-            from pymongo import MongoClient
-        except ImportError:
-            logger.error('[WebUI-mongo-logs] Can not import pymongo.MongoClient')
-            raise
+        """
+        Connect to the Mongo DB with configured URI.
 
+        Execute a command to check if connected on master to activate immediate connection to
+        the DB because we need to know if DB server is available.
+
+        Update log rotation time to force a log rotation
+        """
+        self.con = MongoClient(self.uri, connect=False)
+        logger.info("[mongo-logs] trying to connect MongoDB: %s", self.uri)
         try:
-            if self.replica_set:
-                self.con = MongoClient(self.uri, replicaSet=self.replica_set, fsync=self.mongodb_fsync)
-            else:
-                self.con = MongoClient(self.uri, fsync=self.mongodb_fsync)
-            logger.info("[mongo-logs] connected to mongodb: %s", self.uri)
+            result = self.con.admin.command("ismaster")
+            logger.info("[mongo-logs] connected to MongoDB, admin: %s", result)
+            logger.debug("[mongo-logs] server information: %s", self.con.server_info())
 
             self.db = getattr(self.con, self.database)
-            logger.info("[mongo-logs] connected to the database: %s", self.database)
-
-            if self.username and self.password:
-                self.db.authenticate(self.username, self.password)
-                logger.info("[mongo-logs] user authenticated: %s", self.username)
+            logger.info("[mongo-logs] connected to the database: %s (%s)", self.database, self.db)
 
             self.is_connected = CONNECTED
             self.next_logs_rotation = time.time()
 
             logger.info('[mongo-logs] database connection established')
-        except AutoReconnect, exp:
-            # now what, ha?
-            logger.error("[mongo-logs] MongoLogs.AutoReconnect: %s", exp)
-            # The mongodb is hopefully available until this module is restarted
+        except ConnectionFailure as e:
+            logger.error("[mongo-logs] Server is not available: %s", str(e))
+            return False
+        except Exception as e:
+            logger.error("[mongo-logs] Could not open the database", str(e))
             raise MongoLogsError
-        except Exception, exp:
-            # If there is a replica_set, but the host is a simple standalone one
-            # we get a "No suitable hosts found" here.
-            # But other reasons are possible too.
-            logger.error("[mongo-logs] Could not open the database", exp)
-            raise MongoLogsError
+
+        return True
 
     def close(self):
         self.is_connected = DISCONNECTED
@@ -263,6 +247,12 @@ class MongoLogs(BaseModule):
         """
         For a Mongo DB there is no rotate, but we will delete logs older than configured maximum age.
         """
+        if not self.is_connected == CONNECTED:
+            if not self.open():
+                self.next_logs_rotation = time.time() + 600
+                logger.info("[mongo-logs] log rotation failed, next log rotation at %s " % time.asctime(time.localtime(self.next_logs_rotation)))
+                return
+
         logger.info("[mongo-logs] rotating logs ...")
 
         now = time.time()
@@ -274,12 +264,12 @@ class MongoLogs(BaseModule):
         logger.info("[mongo-logs] removed %d logs older than %s days.", result.deleted_count, self.max_logs_age)
 
         if now < time.mktime(today0005.timetuple()):
-            nextrotation = today0005
+            next_rotation = today0005
         else:
-            nextrotation = today0005 + datetime.timedelta(days=1)
+            next_rotation = today0005 + datetime.timedelta(days=1)
 
         # See you tomorrow
-        self.next_logs_rotation = time.mktime(nextrotation.timetuple())
+        self.next_logs_rotation = time.mktime(next_rotation.timetuple())
         logger.info("[mongo-logs] next log rotation at %s " % time.asctime(time.localtime(self.next_logs_rotation)))
 
     def commit_logs(self):
@@ -288,6 +278,12 @@ class MongoLogs(BaseModule):
         """
         if not self.logs_cache:
             return
+
+        if not self.is_connected == CONNECTED:
+            if not self.open():
+                logger.warning("[mongo-logs] log commiting failed")
+                logger.warning("[mongo-logs] %d lines to insert in database", len(self.logs_cache))
+                return
 
         logger.debug("[mongo-logs] commiting ...")
 
@@ -313,8 +309,12 @@ class MongoLogs(BaseModule):
 
         now = time.time()
         try:
+            # Insert lines to commit
             result = self.db[self.logs_collection].insert_many(some_logs)
             logger.debug("[mongo-logs] inserted %d logs.", len(result.inserted_ids))
+
+            # Request the server to flush data on files
+            self.con.fsync(async=True)
         except AutoReconnect, exp:
             logger.error("[mongo-logs] Autoreconnect exception when inserting lines: %s", str(exp))
             self.is_connected = SWITCHING
@@ -451,14 +451,13 @@ class MongoLogs(BaseModule):
         'last_chk': 1433785101 / 'last_state_change': 1433736035.927526
         'in_scheduled_downtime': False
         """
+        if not self.is_connected == CONNECTED:
+            logger.warning("[mongo-logs] availability not recorded: %s/%s: %s", hostname, service, b.data)
+            return
+
         logger.debug("[mongo-logs] record availability for: %s/%s: %s", hostname, service, b.data['state'])
         logger.debug("[mongo-logs] record availability: %s/%s: %s", hostname, service, b.data)
 
-
-        # Only for host check at the moment ...
-        # if not service is '':
-            # logger.warning("[mongo-logs] record availability is only available for hosts checks (%s/%s)", hostname, service)
-            # return
 
         # Ignoring SOFT states ...
         # if b.data['state_type_id']==0:
@@ -565,7 +564,7 @@ class MongoLogs(BaseModule):
         try:
             logger.debug("[mongo-logs] store for: %s", self.availability_cache[query])
             # self.db[self.hav_collection].save(self.availability_cache[query])
-            self.db[self.hav_collection].replace_one( q_day, self.availability_cache[query], upsert=True )
+            self.db[self.hav_collection].replace_one(q_day, self.availability_cache[query], upsert=True)
         except AutoReconnect, exp:
             logger.error("[mongo-logs] Autoreconnect exception when updating availability: %s", str(exp))
             self.is_connected = SWITCHING
@@ -579,6 +578,9 @@ class MongoLogs(BaseModule):
         self.set_proctitle(self.name)
         self.set_exit_handler()
 
+        # Open database connection
+        self.open()
+
         db_commit_next_time = time.time()
         db_test_connection = time.time()
 
@@ -588,7 +590,7 @@ class MongoLogs(BaseModule):
 
             # DB connection test ?
             if self.db_test_period and db_test_connection < now:
-                logger.info("[mongo-logs] Testing database connection ...")
+                logger.debug("[mongo-logs] Testing database connection ...")
                 # Test connection every 5 seconds ...
                 db_test_connection = now + self.db_test_period
                 if self.is_connected == DISCONNECTED:
@@ -614,3 +616,6 @@ class MongoLogs(BaseModule):
                 self.manage_brok(b)
 
             logger.debug("[mongo-logs] time to manage %s broks (%3.4fs)", len(l), time.time() - now)
+
+        # Close database connection
+        self.close()
